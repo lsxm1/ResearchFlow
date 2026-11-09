@@ -22,24 +22,26 @@ def paper_id(value: str):
     return value if ARXIV_ID.fullmatch(value) else None
 
 
-def resolve_title(client: httpx.Client, title: str) -> tuple[str, str]:
-    """Only import a title match. Broad terms can identify more than one paper."""
+def fetch_entries(client: httpx.Client, params):
     global _last_search
-    query = ' '.join(re.findall(r'[\w-]+', title))
-    if not query:
-        raise ValueError('请输入论文完整标题或 arXiv 编号。')
     with _search_lock:
         time.sleep(max(0, 3 - (time.monotonic() - _last_search)))
         try:
-            response = client.get('https://export.arxiv.org/api/query', params={
-                'search_query': f'ti:"{query}"', 'max_results': 5,
-            })
+            response = client.get('https://export.arxiv.org/api/query', params=params)
             response.raise_for_status()
         finally:
             _last_search = time.monotonic()
-    feed = ElementTree.fromstring(response.content)
+    return ElementTree.fromstring(response.content).findall(f'{ATOM}entry')
+
+
+def resolve_title(client: httpx.Client, title: str) -> tuple[str, str]:
+    """Only import a title match. Broad terms can identify more than one paper."""
+    query = ' '.join(re.findall(r'[\w-]+', title))
+    if not query:
+        raise ValueError('请输入论文完整标题或 arXiv 编号。')
+    entries = fetch_entries(client, {'search_query': f'ti:"{query}"', 'max_results': 5})
     matches = {}
-    for entry in feed.findall(f'{ATOM}entry'):
+    for entry in entries:
         name = entry.findtext(f'{ATOM}title', '')
         identifier = paper_id(entry.findtext(f'{ATOM}id', '').rsplit('/', 1)[-1])
         if identifier and words(name) == words(title):
@@ -47,6 +49,30 @@ def resolve_title(client: httpx.Client, title: str) -> tuple[str, str]:
     if len(matches) != 1:
         raise ValueError('arXiv 没有返回唯一的完整标题匹配，请使用论文的 arXiv 编号。')
     return matches.popitem()
+
+
+def search_papers(client: httpx.Client, query: str):
+    identifier = paper_id(query)
+    if identifier:
+        params = {'id_list': identifier, 'max_results': 8}
+    else:
+        terms = re.findall(r'[\w-]+', query)[:10]
+        if not terms:
+            raise ValueError('请输入论文标题、关键词或 arXiv 编号。')
+        params = {'search_query': ' AND '.join(f'all:"{term}"' for term in terms),
+                  'max_results': 8, 'sortBy': 'submittedDate', 'sortOrder': 'descending'}
+    papers = []
+    for entry in fetch_entries(client, params):
+        identifier = paper_id(entry.findtext(f'{ATOM}id', '').rsplit('/', 1)[-1])
+        if not identifier:
+            continue
+        abstract = ' '.join(entry.findtext(f'{ATOM}summary', '').split())
+        code = re.search(r'https://github\.com/[\w.-]+/[\w.-]+', abstract)
+        papers.append({'id': identifier, 'title': ' '.join(entry.findtext(f'{ATOM}title', '').split()),
+                       'abstract': abstract, 'published': entry.findtext(f'{ATOM}published', '')[:10],
+                       'authors': [author.findtext(f'{ATOM}name', '') for author in entry.findall(f'{ATOM}author')],
+                       'url': f'https://arxiv.org/abs/{identifier}', 'code_url': code[0].rstrip('.') if code else None})
+    return papers
 
 
 def download_pdf(client: httpx.Client, identifier: str, title: str | None = None):

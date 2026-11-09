@@ -1,32 +1,30 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { api } from './api';
+import { Discovery, Graph, Reading, Writing } from './ResearchTools';
 import './style.css';
 
 type Paper = {id: string; title: string; filename: string; status: string; page_count: number; processed_pages: number; text_pages: number; file_url: string; error?: string; version?: number};
 type Evidence = {id: string; document_id: string; title: string; filename: string; page: number; text: string; bbox: number[]; score: number; file_url: string; source?: 'native' | 'ocr'};
-type ComparisonCell = {document_id: string; status: 'missing' | 'candidate' | 'cited_summary'; source_id?: string; quote?: string; text?: string};
+type ComparisonCell = {document_id: string; status: 'missing' | 'candidate' | 'cited_summary'; source_id?: string; quote?: string; text?: string; searched_queries?: string[]};
 type Comparison = {papers: {id: string; title: string; filename: string}[]; rows: {key: string; label: string; cells: ComparisonCell[]}[]};
 type Task = {id: string; question: string; document_ids: string[]; status: string; events: {step: string; message: string; tool: string; time: string}[]; result: null | {mode: string; claims: {text: string; source_id: string; quote: string}[]; evidence: Evidence[]; warnings: string[]; comparison?: Comparison}};
 type Health = {model_mode: string; model_name?: string; version: string; ocr_available: boolean};
 type Duplicate = {document_id: string; title: string; similarity: number; recommendation: string};
 
-async function api<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`/api${path}`, options);
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new Error(typeof body.detail === 'string' ? body.detail : `请求失败 (${response.status})`);
-  }
-  return response.status === 204 ? undefined as T : response.json();
-}
-
 const statuses: Record<string, string> = {queued: '等待解析', parsing: '解析中', ready: '可检索', partial: '部分页面需OCR', needs_ocr: '需要OCR', failed: '失败'};
+const views = {
+  workspace: '文献与任务', reading: '联动阅读', discovery: '检索与追踪',
+  graph: '引用图谱', writing: '写作与绘图', roadmap: '模块计划',
+} as const;
+type View = keyof typeof views;
 const roadmap = [
-  ['01', '文献入库与解析', '已实现基础版', '批量上传、逐页进度、英文扫描件OCR、正文相似提醒。'],
-  ['02', '证据问答与对比', '已实现基础版', 'BM25检索、按篇证据对照、页码与原文块。'],
-  ['03', '联动阅读与翻译', '待开发', '当前支持原始PDF与提取文本切换。后续增加标题导航和段落对照翻译。'],
-  ['04', '论文搜索与追踪', '待开发', '按标题搜索、预览后导入、主题追踪和可解释推荐。'],
-  ['05', '引用图谱与综述', '待开发', '从真实参考文献建立局域图谱、PageRank和带证据的综述。'],
-  ['06', '写作与图表', '待开发', '从证据生成提纲和参考文献；CSV生成图表、脚本和图注。'],
+  ['01', '文献入库与解析', '基础版', '批量上传、OCR、正文相似提醒、目录与页面结构候选。'],
+  ['02', '证据问答与对比', '基础版', '按问题选对比字段、补查证据缺口、原文溯源。模型摘要需配置服务。'],
+  ['03', '联动阅读与翻译', '基础版', '原版预览、目录和引用跳转。划选与整篇翻译需配置模型。'],
+  ['04', '论文搜索与追踪', '基础版', 'arXiv 搜索导入、定期刷新主题、推荐理由和反馈。'],
+  ['05', '引用图谱与综述', '基础版', '引用证据、局域 PageRank、简述和未来工作线索。'],
+  ['06', '写作与图表', '基础版', '带引用提纲、CSV 图表和图注、Mermaid 与 Matplotlib 脚本。'],
 ];
 
 function EvidenceCards({sources, openPaper}: {sources: Evidence[]; openPaper: (id: string, page: number) => void}) {
@@ -57,6 +55,10 @@ function ComparisonTable({table, evidence, openPaper}: {table: Comparison; evide
                 <details><summary>{source?.source === 'ocr' ? 'OCR 识别片段' : '原文片段'}</summary><p>{cell.quote}</p></details>
                 {source && <button className="source-jump" onClick={() => openPaper(source.document_id, source.page)}>第 {source.page} 页 ↗</button>}
               </>}
+              {(cell.searched_queries?.length ?? 0) > 1 && <details>
+                <summary>查看两次检索</summary>
+                <ol>{cell.searched_queries?.map((query, index) => <li key={index}>{query}</li>)}</ol>
+              </details>}
             </td>;
           })}
         </tr>)}</tbody>
@@ -80,7 +82,7 @@ function App() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [view, setView] = useState<'workspace' | 'roadmap'>('workspace');
+  const [view, setView] = useState<View>('workspace');
   const [readerMode, setReaderMode] = useState<'pdf' | 'text'>('pdf');
   const [pageText, setPageText] = useState('');
   const [pageFromOcr, setPageFromOcr] = useState(false);
@@ -132,6 +134,10 @@ function App() {
 
   function openPaper(id: string, targetPage = 1) {
     setCurrent(id); setPage(targetPage); setPageInput(String(targetPage)); setView('workspace');
+  }
+
+  function openReading(id: string, targetPage: number) {
+    setCurrent(id); setPage(targetPage); setPageInput(String(targetPage)); setView('reading');
   }
 
   async function upload(files: FileList | null) {
@@ -188,21 +194,27 @@ function App() {
   }
 
   const eligibleCount = selected.filter(id => papers.some(p => p.id === id && ['ready','partial'].includes(p.status))).length;
+  const readable = papers.filter(p => ['ready', 'partial', 'needs_ocr'].includes(p.status));
+  const scopedPapers = readable.filter(p => !selected.length || selected.includes(p.id)).slice(0, 24).map(p => p.id);
   return <div className="app">
     <aside className="nav">
       <div className="brand"><span className="brand-symbol">R<span>·</span></span><div>ResearchFlow<small>科研证据工作台</small></div></div>
       <div className="nav-label">研究空间</div>
-      <button className={view === 'workspace' ? 'nav-item active' : 'nav-item'} onClick={() => setView('workspace')}><span>▤</span>文献与任务</button>
-      <button className={view === 'roadmap' ? 'nav-item active' : 'nav-item'} onClick={() => setView('roadmap')}><span>▦</span>模块计划</button>
+      {(Object.keys(views) as View[]).map(key => <button key={key} className={view === key ? 'nav-item active' : 'nav-item'} onClick={() => setView(key)}>{views[key]}</button>)}
       <div className="nav-bottom"><span className="version">LOCAL WORKSPACE / V0.1</span><p>从论文出发<br/>让每一次判断有据可查。</p><span className={health ? 'connection online' : 'connection'}>● {health ? '本地服务已连接' : '等待后端服务'}</span></div>
     </aside>
     <main>
-      <header><div className="breadcrumb">我的研究 / <strong>{view === 'workspace' ? '文献与任务' : '开发路线'}</strong></div><span className="mode-badge">{health?.model_mode === 'configured' ? `模型已配置 · ${health.model_name}` : '证据检索模式 · 无模型调用'}</span></header>
-      <div className="page-heading"><div><div className="eyebrow">RESEARCH, GROUNDED.</div><h1>{view === 'workspace' ? '把论文，变成可追溯的证据。' : '六个模块，一个科研闭环。'}</h1><p>导入文献，寻找证据，回到原文。先验证，再形成结论。</p></div><span className="phase">第一阶段<span>文献 → 证据</span></span></div>
+      <header><div className="breadcrumb">我的研究 / <strong>{views[view]}</strong></div><span className="mode-badge">{health?.model_mode === 'configured' ? `模型已配置 · ${health.model_name}` : '证据检索模式 · 无模型调用'}</span></header>
+      <div className="page-heading"><div><div className="eyebrow">RESEARCHFLOW</div><h1>{view === 'workspace' ? '把论文，变成可追溯的证据。' : views[view]}</h1><p>导入文献，寻找证据，回到原文。</p></div></div>
       {error && <div className="banner error" role="alert">{error}<button onClick={() => setError('')} aria-label="关闭错误提示">×</button></div>}
       {notice && <div className="banner" role="status">{notice}<button onClick={() => setNotice('')} aria-label="关闭提示">×</button></div>}
       {!health && <div className="banner error">后端尚未连接。请运行项目中的 start-backend.ps1。</div>}
-      {view === 'roadmap' ? <section className="roadmap">{roadmap.map(([num, title, state, desc]) => <article className="module-card" key={num}><span className="module-number">{num}</span><span className={`state ${state.includes('已实现') ? 'ready' : ''}`}>{state}</span><h2>{title}</h2><p>{desc}</p></article>)}</section> : <div className="workspace">
+      {view === 'reading' ? <Reading papers={readable} paperId={current} page={page} open={openReading}/>
+        : view === 'discovery' ? <Discovery open={openPaper}/>
+        : view === 'graph' ? <Graph ids={scopedPapers} open={openReading}/>
+        : view === 'writing' ? <Writing ids={scopedPapers}/>
+        : view === 'roadmap' ? <section className="roadmap">{roadmap.map(([num, title, state, desc]) => <article className="module-card" key={num}><span className="module-number">{num}</span><span className="state">{state}</span><h2>{title}</h2><p>{desc}</p></article>)}</section>
+        : <div className="workspace">
         <section className="panel library"><div className="panel-heading"><div><h2>文献库 <span className="count">{papers.length}</span></h2><p>勾选文献，限定任务证据范围</p></div></div>
           <input ref={fileInput} type="file" accept="application/pdf,.pdf" multiple aria-label="上传PDF文件" onChange={e => void upload(e.target.files)} hidden/>
           <button className="upload" disabled={uploading || !health} onClick={() => fileInput.current?.click()}><span>＋</span>{uploading ? '上传中…' : '导入 PDF 文献'}<small>可多选 · 每份最多50MB</small></button>
@@ -232,14 +244,14 @@ function App() {
           <div className="task-compose"><label htmlFor="question">你希望从论文中找到什么？</label><textarea id="question" value={question} onChange={e => setQuestion(e.target.value)} maxLength={2000}/><div className="examples"><button onClick={() => setQuestion('What hardware and training schedule were used?')}>训练硬件</button><button onClick={() => setQuestion('What are the Adam beta and learning rate hyperparameters?')}>超参数</button><button onClick={() => setQuestion('Compare the BLEU results for English to German and English to French.')}>实验指标</button></div><button className="primary" onClick={() => void submit()} disabled={!health || !eligibleCount || question.trim().length < 2 || submitting}>{submitting ? '提交中…' : health?.model_mode === 'configured' ? '执行研究任务 →' : '检索原文证据 →'}</button><p className="compose-note">{health?.model_mode === 'configured' ? '使用后端配置的模型；引用校验通过仍需人工核对。' : '当前不生成AI答案，不消耗大模型API额度。'}</p></div>
           <details className="task-compose compare-form">
             <summary>补齐论文并对比</summary>
-            <p className="compose-note">勾选一篇已入库论文，再填写目标论文。对比训练目标、数据和硬件。</p>
-            <label htmlFor="target-paper">目标论文完整标题或 arXiv 编号</label>
+            <p className="compose-note">勾选一篇已入库论文。在上方问题中写下另一篇的 arXiv 编号或《完整标题》，并说明要比较的内容。</p>
+            <label htmlFor="target-paper">目标论文（可选，优先使用此栏）</label>
             <input id="target-paper" value={targetPaper} onChange={e => setTargetPaper(e.target.value)} maxLength={240}/>
             <div className="examples"><button onClick={() => {
-              setTargetPaper('BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding');
-              setQuestion('对比两篇论文的训练目标、训练数据和训练硬件。');
+              setTargetPaper('');
+              setQuestion('对比当前论文和 arXiv:1810.04805 的训练时长、序列长度和训练能耗。');
             }}>填入 BERT 示例</button></div>
-            <button className="primary" onClick={() => void submit(true)} disabled={!health || eligibleCount !== 1 || targetPaper.trim().length < 2 || question.trim().length < 2 || submitting}>补齐并对比 →</button>
+            <button className="primary" onClick={() => void submit(true)} disabled={!health || eligibleCount !== 1 || question.trim().length < 2 || submitting}>补齐并对比 →</button>
           </details>
           {tasks.length > 0 && <div className="task-history"><label htmlFor="history">任务记录</label><select id="history" value={taskId} onChange={e => setTaskId(e.target.value)}><option value="">选择已保存的任务</option>{tasks.map(t => <option key={t.id} value={t.id}>{t.question.slice(0,55)} · {t.status}</option>)}</select></div>}
           <div className="task-output" aria-live="polite">{task ? <>

@@ -1,12 +1,13 @@
+import asyncio
 import hashlib
 import json
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from uuid import uuid4
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from . import agent, comparison, documents
+from . import agent, comparison, discovery, documents, workspace
 from .config import MAX_UPLOAD, UPLOADS, model_config
 from .db import connect, document, init_db, task
 
@@ -23,10 +24,17 @@ async def lifespan(app):
         pending = con.execute("SELECT id FROM documents WHERE status IN ('queued','parsing')").fetchall()
     for row in pending:
         documents.PDF_POOL.submit(documents.parse_document, row['id'])
-    yield
+    scheduler = asyncio.create_task(discovery.run_scheduler())
+    try:
+        yield
+    finally:
+        scheduler.cancel()
+        with suppress(asyncio.CancelledError):
+            await scheduler
 
 
 app = FastAPI(title='ResearchFlow API', version='0.1.0', lifespan=lifespan)
+app.include_router(workspace.router)
 
 
 def get_document(doc_id):
@@ -142,7 +150,7 @@ class TaskRequest(BaseModel):
 
 
 class CompareRequest(TaskRequest):
-    target_paper: str = Field(min_length=2, max_length=240)
+    target_paper: str = Field(default='', max_length=240)
 
 
 def enqueue_task(body: TaskRequest, runner, *args):
@@ -166,8 +174,10 @@ def create_task(body: TaskRequest):
 
 @app.post('/api/tasks/compare', status_code=202)
 def create_comparison(body: CompareRequest):
-    if len(set(body.document_ids)) != 1 or len(body.target_paper.strip()) < 2:
-        raise HTTPException(422, '请选择一篇已入库论文，并填写要比较的另一篇论文标题或 arXiv 编号。')
+    if len(set(body.document_ids)) != 1:
+        raise HTTPException(422, '请选择一篇已入库论文作为对比起点。')
+    if len(body.question.strip()) < 2:
+        raise HTTPException(422, '请填写研究问题。')
     return enqueue_task(body, comparison.execute, body.target_paper.strip())
 
 

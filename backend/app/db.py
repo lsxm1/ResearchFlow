@@ -47,6 +47,20 @@ def init_db():
             status TEXT NOT NULL DEFAULT 'queued', events TEXT NOT NULL DEFAULT '[]',
             result TEXT, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
         );
+        CREATE TABLE IF NOT EXISTS tracked_topics (
+            id TEXT PRIMARY KEY, query TEXT NOT NULL UNIQUE, interval_minutes INTEGER NOT NULL,
+            next_at REAL NOT NULL, updated_at REAL, results TEXT NOT NULL DEFAULT '[]', error TEXT
+        );
+        CREATE TABLE IF NOT EXISTS topic_feedback (
+            topic_id TEXT NOT NULL REFERENCES tracked_topics(id) ON DELETE CASCADE,
+            paper_id TEXT NOT NULL, rating INTEGER NOT NULL,
+            PRIMARY KEY(topic_id, paper_id)
+        );
+        CREATE TABLE IF NOT EXISTS translations (
+            document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            page INTEGER NOT NULL, source_hash TEXT NOT NULL, text TEXT NOT NULL,
+            PRIMARY KEY(document_id, page)
+        );
         ''')
         con.execute('BEGIN IMMEDIATE')
         columns = {column['name'] for column in con.execute('PRAGMA table_info(pages)')}
