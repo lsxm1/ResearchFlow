@@ -35,6 +35,7 @@ export function Reading({papers, paperId, page, open}: {papers: Paper[]; paperId
   const [reference, setReference] = useState<Ref>();
   const [returnPage, setReturnPage] = useState<number>();
   const [translation, setTranslation] = useState('');
+  const [language, setLanguage] = useState<'Chinese' | 'English'>('Chinese');
   const [job, setJob] = useState('');
   const [progress, setProgress] = useState('');
   const [refresh, setRefresh] = useState(0);
@@ -59,9 +60,9 @@ export function Reading({papers, paperId, page, open}: {papers: Paper[]; paperId
     setData(undefined);
     setStructure(undefined);
     setTranslation('');
-    if (paper?.id) api<Page>(`/read/${paper.id}/pages/${pageNumber}`).then(value => {if (live) setData(value);}).catch(e => {if (live) setError(message(e));});
+    if (paper?.id) api<Page>(`/read/${paper.id}/pages/${pageNumber}?language=${language}`).then(value => {if (live) setData(value);}).catch(e => {if (live) setError(message(e));});
     return () => { live = false; };
-  }, [paper?.id, pageNumber, refresh]);
+  }, [paper?.id, pageNumber, language, refresh]);
 
   useEffect(() => {
     if (!job) return;
@@ -74,7 +75,8 @@ export function Reading({papers, paperId, page, open}: {papers: Paper[]; paperId
         if (task.status === 'completed' || task.status === 'failed') {
           setJob('');
           setRefresh(count => count + 1);
-          if (task.status === 'failed') setError(task.result?.warnings[0] ?? '翻译失败。');
+          if (task.result?.warnings.length) setError(task.result.warnings.join(' '));
+          else if (task.status === 'failed') setError('翻译失败。');
         }
       } catch (e) {if (live) {setError(message(e)); setJob('');}}
     };
@@ -88,7 +90,7 @@ export function Reading({papers, paperId, page, open}: {papers: Paper[]; paperId
   async function queueTranslation(id: string, start: number, end: number) {
     setError(''); setBusy(true);
     try {
-      setJob((await post<{id: string}>(`/read/${id}/translate`, {start,end})).id);
+      setJob((await post<{id: string}>(`/read/${id}/translate`, {start,end,language})).id);
       setProgress('翻译排队中…');
     } catch(e) {setError(message(e));}
     finally {setBusy(false);}
@@ -101,7 +103,7 @@ export function Reading({papers, paperId, page, open}: {papers: Paper[]; paperId
       return;
     }
     setError(''); setBusy(true);
-    try {setTranslation((await post<{translation: string}>('/translate', {text: selection.toString().trim(), language:'Chinese'})).translation);}
+    try {setTranslation((await post<{translation: string}>('/translate', {text: selection.toString().trim(), language})).translation);}
     catch(e) {setError(message(e));}
     finally {setBusy(false);}
   }
@@ -127,6 +129,9 @@ export function Reading({papers, paperId, page, open}: {papers: Paper[]; paperId
   return <section className="tool-box">
     <h2>联动阅读与翻译</h2>
     <div className="tool-actions">
+      <select aria-label="译文语言" value={language} disabled={busy || !!job} onChange={e => setLanguage(e.target.value as 'Chinese' | 'English')}>
+        <option value="Chinese">中文</option><option value="English">学术英文</option>
+      </select>
       <select aria-label="阅读文献" value={paper.id} onChange={e => open(e.target.value,1)}>{papers.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select>
       <button disabled={pageNumber <= 1} onClick={() => open(paper.id,pageNumber-1)}>上一页</button>
       <span>{pageNumber} / {paper.page_count}</span>
@@ -141,13 +146,13 @@ export function Reading({papers, paperId, page, open}: {papers: Paper[]; paperId
       <button disabled={busy || !!job} onMouseDown={e => e.preventDefault()} onClick={() => void translateSelection()}>翻译划选</button>
       <button disabled={busy || !!job} onClick={() => void queueTranslation(paper.id,pageNumber,pageNumber)}>翻译本页</button>
       <button disabled={busy || !!job} onClick={() => void queueTranslation(paper.id,1,paper.page_count)}>翻译整篇</button>
-      <a href={`/api/read/${paper.id}/translation.md`}>导出已完成译文</a>
+      <a href={`/api/read/${paper.id}/translation.md?language=${language}`}>导出已完成译文</a>
       <button onClick={() => void api<Structure>(`/read/${paper.id}/pages/${pageNumber}/structure`).then(setStructure).catch(e => setError(message(e)))}>查看页面结构</button>
     </div>
     {progress && <p className="compose-note" role="status">{progress}</p>}
     {index?.abstract && <details><summary>摘要与元信息</summary><p>{index.metadata.author}</p><p>{index.abstract}</p></details>}
     {structure && <details open><summary>当前页结构</summary>
-      <p>{structure.tables.length} 个表格，{structure.figures.length} 个图像区域，{structure.formula_candidates.length} 个公式候选。</p>
+      <p>{structure.tables.length} 个表格候选，{structure.figures.length} 个图像区域，{structure.formula_candidates.length} 个公式候选。</p>
       {structure.tables.map((table,i) => <Grid key={i} rows={table.rows}/>)}
       {structure.formula_candidates.map((item,i) => <pre key={i}>{item.text}</pre>)}
     </details>}
@@ -156,7 +161,7 @@ export function Reading({papers, paperId, page, open}: {papers: Paper[]; paperId
         <img src={`/api/read/${paper.id}/pages/${pageNumber}/image`} alt={`原始 PDF 第 ${pageNumber} 页`}/>
         <pre>{data?.text || '本页暂无可提取文本。'}</pre>
       </div></div>
-      <div><h3>中文译文</h3><div className="read-scroll" ref={translated} onScroll={event => sync(event, original.current)}>
+      <div><h3>{language === 'Chinese' ? '中文译文' : '学术英文译文'}</h3><div className="read-scroll" ref={translated} onScroll={event => sync(event, original.current)}>
         <pre>{translation || data?.translation || '翻译任务完成后，译文会显示在这里。'}</pre>
       </div></div>
     </div>

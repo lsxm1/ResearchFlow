@@ -1,0 +1,17 @@
+services:
+  researchflow:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - researchflow-data:/data
+    environment:
+      RF_MODEL_MODE: ${RF_MODEL_MODE:-disabled}
+      RF_MODEL_BASE_URL: ${RF_MODEL_BASE_URL:-}
+      RF_MODEL_NAME: ${RF_MODEL_NAME:-}
+      RF_MODEL_API_KEY: ${RF_MODEL_API_KEY:-}
+      RF_MODEL_JSON_MODE: ${RF_MODEL_JSON_MODE:-0}
+      RF_DEMO_PASSWORD: ${RF_DEMO_PASSWORD:-}
+    restart: unless-stopped
+volumes:
+  researchflow-data:

@@ -3,6 +3,12 @@ import sqlite3
 from contextlib import contextmanager
 from .config import DB
 
+TRANSLATION_SCHEMA = '''CREATE TABLE IF NOT EXISTS translations (
+    document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    page INTEGER NOT NULL, language TEXT NOT NULL, source_hash TEXT NOT NULL, text TEXT NOT NULL,
+    PRIMARY KEY(document_id, page, language)
+)'''
+
 
 @contextmanager
 def connect():
@@ -56,16 +62,19 @@ def init_db():
             paper_id TEXT NOT NULL, rating INTEGER NOT NULL,
             PRIMARY KEY(topic_id, paper_id)
         );
-        CREATE TABLE IF NOT EXISTS translations (
-            document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-            page INTEGER NOT NULL, source_hash TEXT NOT NULL, text TEXT NOT NULL,
-            PRIMARY KEY(document_id, page)
-        );
         ''')
         con.execute('BEGIN IMMEDIATE')
         columns = {column['name'] for column in con.execute('PRAGMA table_info(pages)')}
         if 'source' not in columns:
             con.execute("ALTER TABLE pages ADD COLUMN source TEXT NOT NULL DEFAULT 'native'")
+        columns = {column['name'] for column in con.execute('PRAGMA table_info(translations)')}
+        if columns and 'language' not in columns:
+            con.execute('ALTER TABLE translations RENAME TO translations_legacy')
+            con.execute(TRANSLATION_SCHEMA)
+            con.execute("INSERT INTO translations SELECT document_id,page,'Chinese',source_hash,text FROM translations_legacy")
+            con.execute('DROP TABLE translations_legacy')
+        else:
+            con.execute(TRANSLATION_SCHEMA)
 
 
 def document(row):

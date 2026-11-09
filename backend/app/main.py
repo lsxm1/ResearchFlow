@@ -1,14 +1,18 @@
 import asyncio
+import base64
 import hashlib
+import hmac
 import json
 import logging
+import os
 from contextlib import asynccontextmanager, suppress
 from uuid import uuid4
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from . import agent, comparison, discovery, documents, workspace
-from .config import MAX_UPLOAD, UPLOADS, model_config
+from .config import MAX_UPLOAD, ROOT, UPLOADS, model_config
 from .db import connect, document, init_db, task
 
 logging.basicConfig(level=logging.INFO)
@@ -35,6 +39,18 @@ async def lifespan(app):
 
 app = FastAPI(title='ResearchFlow API', version='0.1.0', lifespan=lifespan)
 app.include_router(workspace.router)
+
+
+@app.middleware('http')
+async def review_access(request: Request, call_next):
+    password = os.getenv('RF_DEMO_PASSWORD')
+    if password:
+        expected = b'Basic ' + base64.b64encode(f'reviewer:{password}'.encode())
+        actual = request.headers.get('Authorization', '').encode('latin1')
+        if not hmac.compare_digest(actual, expected):
+            return PlainTextResponse('Reviewer sign-in required.', status_code=401,
+                                     headers={'WWW-Authenticate': 'Basic realm="ResearchFlow", charset="UTF-8"'})
+    return await call_next(request)
 
 
 def get_document(doc_id):
@@ -194,3 +210,17 @@ def task_detail(task_id: str):
     if row is None:
         raise HTTPException(404, '任务不存在。')
     return task(row)
+
+
+@app.get('/api/tasks/{task_id}/report.md')
+def task_report(task_id: str, request: Request):
+    data = task_detail(task_id)
+    if data['status'] != 'completed' or not data['result'].get('comparison'):
+        raise HTTPException(409, '对比任务完成后可下载报告。')
+    markdown = workspace.comparison_report(data, str(request.base_url).rstrip('/'))
+    return PlainTextResponse(markdown, headers={'Content-Disposition': 'attachment; filename="researchflow-report.md"'})
+
+
+frontend = ROOT / 'frontend' / 'dist'
+if (frontend / 'index.html').is_file():
+    app.mount('/', StaticFiles(directory=frontend, html=True), name='workbench')

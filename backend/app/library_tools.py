@@ -68,6 +68,34 @@ def outline_from_text(pages):
     return outline[:250]
 
 
+def page_tables(page, blocks):
+    tables = [{'bbox': list(table.bbox), 'rows': table.extract(), 'method': 'grid'} for table in page.find_tables().tables]
+    if tables:
+        return tables
+    # Academic tables may use whitespace and a caption in place of a closed grid.
+    for caption in blocks:
+        if not re.match(r'\s*Table\s+\d+\s*[:.]', caption[4], re.I):
+            continue
+        region = []
+        bottom = caption[3]
+        for block in blocks:
+            if block[1] < caption[3] - 1 or block == caption:
+                continue
+            if block[1] - bottom > (42 if not region else 22) or len(region) >= 30:
+                break
+            region.append(block)
+            bottom = max(bottom, block[3])
+        if len(region) < 3:
+            continue
+        clip = pymupdf.Rect(min(b[0] for b in region)-2, min(b[1] for b in region)-2,
+                            max(b[2] for b in region)+2, bottom+2) & page.rect
+        for table in page.find_tables(clip=clip, strategy='text').tables:
+            rows = [row for row in table.extract() if any(row)]
+            if len(rows) >= 3 and 2 <= table.col_count <= 18:
+                tables.append({'bbox': list(table.bbox), 'rows': rows, 'method': 'caption_text'})
+    return tables
+
+
 def inspect_pdf(doc_id, page=None):
     """Run on the existing single PyMuPDF worker."""
     with pymupdf.open(UPLOADS / f'{doc_id}.pdf') as pdf:
@@ -76,10 +104,11 @@ def inspect_pdf(doc_id, page=None):
             return {'metadata': {key: metadata.get(key, '') for key in ('title', 'author', 'subject')},
                     'outline': [{'level': level, 'title': title, 'page': number} for level, title, number in pdf.get_toc() if number > 0]}
         source = pdf[page-1]
-        tables = [{'bbox': list(table.bbox), 'rows': table.extract()} for table in source.find_tables().tables]
+        blocks = sorted((block for block in source.get_text('blocks') if block[6] == 0), key=lambda block: block[1])
+        tables = page_tables(source, blocks)
         figures = [{'bbox': list(item['bbox'])} for item in source.get_image_info()]
-        formulas = [{'bbox': list(block[:4]), 'text': block[4]} for block in source.get_text('blocks')
-                    if block[6] == 0 and re.search(r'[∑∫√≈≤≥∂∏]|\\(?:frac|sum|int)\b', block[4])]
+        formulas = [{'bbox': list(block[:4]), 'text': block[4]} for block in blocks
+                    if re.search(r'[∑∫√≈≤≥∂∏βϵελ]|\\(?:frac|sum|int)\b', block[4])]
         return {'tables': tables, 'figures': figures, 'formula_candidates': formulas}
 
 
@@ -109,7 +138,10 @@ def citation_graph(doc_ids):
                 title_hit = len(title.split()) >= 4 and f' {title} ' in f' {normalized} '
                 id_hit = target['arxiv_id'] and re.search(r'(?<!\d)' + re.escape(target['arxiv_id']) + r'(?!\d)', entry['text'])
                 if title_hit or id_hit:
-                    edges.append({'source': source['id'], 'target': target['id'], 'page': entry['page'], 'quote': entry['text']})
+                    match = id_hit or re.search(r'\W+'.join(re.escape(word) for word in title.split()), entry['text'], re.I)
+                    start = max(0, match.start()-180) if match else 0
+                    edges.append({'source': source['id'], 'target': target['id'], 'page': entry['page'],
+                                  'quote': entry['text'][start:start+580].strip()})
                     break
         for page in pages:
             if len(future_work) >= 12:

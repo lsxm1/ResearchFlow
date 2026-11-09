@@ -1,5 +1,6 @@
 """Bounded paper and field selection for natural-language comparison requests."""
 from dataclasses import dataclass
+import os
 import re
 
 from . import agent, arxiv
@@ -79,6 +80,19 @@ def target_from_question(question, base):
 
 
 def plan_with_model(question, base, target):
+    if target and os.getenv('RF_MODEL_PROFILE') == 'compact':
+        queries = {}
+        for key in (requested_fields(question) or DEFAULT_FIELDS)[:MAX_FIELDS]:
+            raw, _ = agent.chat_completion(
+                'Write an English keyword query for finding the specified field in machine learning papers. '
+                'Output only 3 to 8 keywords. Focus on evidence terms.',
+                f'Field: {FIELDS[key].query}. Research question: {question[:450]}',
+                structured=False, max_tokens=42,
+            )
+            tokens = re.findall(r'[A-Za-z][A-Za-z0-9-]*', raw.splitlines()[0] if raw else '')[:10]
+            if len(tokens) >= 2:
+                queries[key] = ' '.join(tokens)
+        return target, queries
     plan = agent.call_model(
         'Plan a two-paper comparison. Use only supported field keys. Return JSON '
         '{"queries":{"field_key":"short English terms"},"target":{"mention":"exact text in question",'

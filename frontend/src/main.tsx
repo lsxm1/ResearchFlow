@@ -259,7 +259,10 @@ function App() {
             <ol className="timeline">{task.events.map((event,i) => <li key={i}><strong>{event.tool}</strong><span>{event.message}</span></li>)}</ol>
             {task.result?.warnings.map((w,i) => <p className="warning" key={i}>{w}</p>)}
             {!!task.result?.claims.length && <><h3>有来源的结论</h3>{task.result.claims.map((claim,i) => {const source = task.result?.evidence.find(x => x.id === claim.source_id); return <article className="claim" key={i}><p>{claim.text}</p><blockquote>{claim.quote}</blockquote>{source && <button onClick={() => openPaper(source.document_id,source.page)}>原文 · 第{source.page}页 ↗</button>}</article>;})}</>}
-            {task.result?.comparison ? <ComparisonTable table={task.result.comparison} evidence={task.result.evidence} openPaper={openPaper}/> : task.result && task.result.mode !== 'error' && task.document_ids.length > 1 ? <>
+            {task.result?.comparison ? <>
+              <ComparisonTable table={task.result.comparison} evidence={task.result.evidence} openPaper={openReading}/>
+              <p><a href={`/api/tasks/${task.id}/report.md`}>下载研究报告 · Markdown</a></p>
+            </> : task.result && task.result.mode !== 'error' && task.document_ids.length > 1 ? <>
               <div className="output-title"><h3>多文献证据对照</h3><span>{task.document_ids.length} 篇</span></div>
               <p className="result-note">各篇按关键词相关性排序。点击页码核对片段。</p>
               {task.document_ids.map(id => {

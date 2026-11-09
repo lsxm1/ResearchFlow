@@ -1,6 +1,6 @@
 # ResearchFlow · 科研证据工作台
 
-ResearchFlow 面向传智杯「AI大模型创新应用挑战赛」，参赛目标是覆盖文献检索与导入、解析与精读、溯源问答、引用图谱、综述、写作和绘图的全流程科研 Agent。当前 v0.1 已实现本地文献与证据检索基础。六模块的完成状态、缺项和提交前验收见[赛题范围与验收](docs/模块计划.md)。
+ResearchFlow 是面向传智杯「AI大模型创新应用挑战赛」的全流程科研 Agent 应用。用户提出研究问题，系统补齐论文、检索证据、生成对比，最后导出包含原文定位、引用关系与写作提纲的研究报告。[赛题范围与验收](docs/模块计划.md)
 
 ## 当前能做什么
 
@@ -9,37 +9,28 @@ ResearchFlow 面向传智杯「AI大模型创新应用挑战赛」，参赛目�
 - 支持英文扫描件本地 OCR。识别文本可检索，并保留原始 PDF 页码。已入库的扫描件可重新识别。
 - 根据正文词组指纹提示相似文献；从PDF正文提取arXiv版本信息，给出保留建议。该算法是词面相似基线，尚非语义向量去重。
 - 多选文献时按篇检索并展示证据。片段保留原文、页码和块坐标。中文提供少量科研词汇映射。
-- 对比任务可按完整标题或新式 arXiv 编号补齐另一篇论文。下载后自动解析，训练目标、数据和硬件各有可查原文的表格行。
+- 对比任务从问题或指定目标中识别论文与字段，按 arXiv 编号或完整标题补齐文献。缺证据时记录补查结果。
 - 展示真实执行记录、保存任务，点击证据跳转原始PDF页码。
-- 可配置兼容 `/chat/completions` 的本地或远端模型：一次受限补充检索、基于证据生成结论、验证来源ID和原文引句。**未配置真实模型进行端到端验证**。
+- 联动阅读支持目录、数字引用往返跳转、原版页面、版面结构候选、划选与按页或整篇翻译。译文可导出 Markdown。
+- 主题追踪定期刷新 arXiv，结合本地文献标题、代码链接与赞踩反馈排序。
+- 用参考文献原文生成局域引用图谱、PageRank、综述线索和后续研究线索。
+- 按研究构想生成带引用的提纲和 Mermaid 图。CSV 支持数据表、柱状图、折线图、三维雷达图、图注和 Matplotlib 脚本。
 
 默认没有模型调用，只显示原文候选，不生成回答。候选不等于答案；精确引句校验也不能保证结论蕴含关系正确，仍需人工核对。
 
 ## 启动（Windows）
 
-要求 Python 3.12、Node.js、npm。项目已在本机安装依赖；换电脑或依赖变化时再运行安装脚本。
-
-在本目录打开PowerShell：
+要求 Windows x64、Python 3.12、Node.js 和 npm。在项目目录打开 PowerShell：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1 -LocalModel
 ```
 
-然后分别在两个终端运行：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\start-backend.ps1
-```
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\start-frontend.ps1
-```
-
-浏览器打开 <http://127.0.0.1:5173>。接口文档 <http://127.0.0.1:8000/docs>。
+浏览器打开 <http://127.0.0.1:8000>，接口文档在 <http://127.0.0.1:8000/docs>。单服务提供前端和 API。`-LocalModel` 使用通过校验的 llama.cpp 与 Qwen2.5-0.5B。当前机器已缓存，换电脑首次需下载约 423 MB。运行在 CPU，使用本地算力。单独运行 `start.ps1` 时按 `.env` 配置模型，默认保留证据检索模式。原前后端启动脚本仍供开发使用。
 
 换电脑时，运行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\setup-ocr.ps1` 下载约 4 MB 英文识别数据。本机已准备好。使用自定义数据目录时，可用 `RF_TESSDATA_DIR` 指向包含 `eng.traineddata` 的目录。
 
-两份服务只绑定本机。当前没有账户和公网访问保护，公网部署放在后续里程碑处理。
+本地模式绑定回环地址。`docker compose up --build` 提供同源服务的容器部署配置。公开评审部署需配置 HTTPS 反代及模型服务，可设置 `RF_DEMO_PASSWORD` 并以 `reviewer` 登录。Docker 配置尚待在目标主机实构建和上线核验。
 
 ## 第一次体验
 
@@ -48,18 +39,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\start-frontend.ps1
 3. 点击“检索原文证据”，查看执行记录，点击“第 N 页”核对原文。
 4. 上传扫描件，等待识别。已有扫描件显示“需要OCR”时，在原文阅读区点“重新进行 OCR”。检索后从带“OCR 识别片段”标记的结果打开对应页。
 5. 上传541页教材，观察逐页进度，解析后跳转第541页或搜索关键词。
-6. 只勾选 Transformer，展开「补齐论文并对比」，点「填入 BERT 示例」再运行。首次执行会连接 arXiv。表格中展开原文片段，并点击页码核对。
+6. 只勾选 Transformer，展开「补齐论文并对比」，点「填入 BERT 示例」再运行。首次执行会连接 arXiv。表格中展开原文片段，点击页码打开联动阅读，最后下载研究报告。
 
-对比任务在证据检索模式下使用预设字段和关键词。配置模型后可生成字段检索词和带引句的摘要，摘要通过来源 ID 与原文引句检查后才显示。真实模型效果仍待实测。
+对比任务按用户问题选择支持的字段。启用本地模型后，模型生成检索词并从候选中摘录原句。未通过原文核对的内容保留为候选。小模型适合流程验收，术语、复杂推理与长文翻译需要人工复核。每次 PDF 翻译最多 60 页。
 
 原始数据目录：`C:\Users\DELL\Doubao\chats\2026-11-09\new-chat\pdf`。
 这是公开替代数据集；自行生成的扫描件不能代表官方扫描件难度。不从配套 `.md` 文件导入答案。
 
-## 模型配置以后再决定
+## 使用其他模型
 
 复制 `.env.example` 为 `.env`。默认 `RF_MODEL_MODE=disabled`，没有API费用。
 
-将来无论是本地开源模型服务还是云端服务，只需配置：
+连接其他本地模型服务或云端服务时，配置如下：
 
 ```dotenv
 RF_MODEL_MODE=openai_compatible

@@ -60,13 +60,13 @@ def reading_index(doc_id: str):
 
 
 @router.get('/read/{doc_id}/pages/{page}')
-def reading_page(doc_id: str, page: int):
+def reading_page(doc_id: str, page: int, language: Literal['Chinese', 'English'] = 'Chinese'):
     check_page(doc_id, page)
     with connect() as con:
         row = con.execute('SELECT text,source FROM pages WHERE document_id=? AND page=?', (doc_id, page)).fetchone()
     text = row['text'] if row else ''
     return {'text': text, 'source': row['source'] if row else 'native',
-            'translation': authoring.get_translation(doc_id, page, text),
+            'translation': authoring.get_translation(doc_id, page, text, language),
             'citations': list(dict.fromkeys(re.findall(r'\[[1-9][0-9]{0,3}\]', text)))[:40]}
 
 
@@ -86,6 +86,7 @@ def page_structure(doc_id: str, page: int):
 class TranslationRange(BaseModel):
     start: int = Field(ge=1)
     end: int = Field(ge=1)
+    language: Literal['Chinese', 'English'] = 'Chinese'
 
 
 def require_model():
@@ -103,16 +104,16 @@ def queue_translation(doc_id: str, body: TranslationRange):
     with connect() as con:
         con.execute('INSERT INTO tasks(id,question,document_ids) VALUES (?,?,?)',
                     (task_id, f'翻译第 {body.start}–{body.end} 页 · {row["title"]}', json.dumps([doc_id])))
-    agent.TASK_POOL.submit(authoring.translate_pages, task_id, doc_id, body.start, body.end)
+    agent.TASK_POOL.submit(authoring.translate_pages, task_id, doc_id, body.start, body.end, body.language)
     return {'id': task_id, 'status': 'queued'}
 
 
 @router.get('/read/{doc_id}/translation.md')
-def export_translation(doc_id: str):
+def export_translation(doc_id: str, language: Literal['Chinese', 'English'] = 'Chinese'):
     row, pages = library_tools.paper_and_pages(paper(doc_id)['id'])
     lines = [f'# {row["title"]}', '']
     for page in pages:
-        translated = authoring.get_translation(doc_id, page['page'], page['text'])
+        translated = authoring.get_translation(doc_id, page['page'], page['text'], language)
         if translated is not None:
             lines.extend((f'## 第 {page["page"]} 页', translated, ''))
     if len(lines) == 2:
@@ -262,3 +263,44 @@ async def chart(file: UploadFile = File(...), kind: Literal['bar', 'line', 'rada
         raise HTTPException(422, str(exc)) from exc
     finally:
         await file.close()
+
+
+def comparison_report(task, base_url):
+    result = task['result']
+    table = result['comparison']
+    sources = {source['id']: source for source in result['evidence']}
+    lines = ['# ResearchFlow 研究报告', '', '## 研究问题', task['question'], '', '## 论文',
+             *[f"- {item['title']} · {item['filename']}" for item in table['papers']], '', '## 分字段证据']
+    for row in table['rows']:
+        lines.extend(('', f"### {row['label']}"))
+        for column, cell in zip(table['papers'], row['cells'], strict=True):
+            source = sources.get(cell.get('source_id'))
+            lines.append(f"- **{column['title']}**")
+            if source is None:
+                lines.append('  - 未检得匹配片段。')
+            else:
+                if cell.get('text'):
+                    lines.append(f"  - 模型摘要：{cell['text']}")
+                quote = ' '.join(cell['quote'].splitlines())
+                lines.append(f"  - 原文候选：{quote} [第 {source['page']} 页]({base_url}{source['file_url']})")
+            if cell.get('searched_queries'):
+                lines.append('  - 检索词：' + '；'.join(cell['searched_queries']))
+    rows = []
+    for item in table['papers']:
+        try:
+            rows.append(paper(item['id']))
+        except HTTPException as exc:
+            if exc.status_code != 404:
+                raise
+    if rows:
+        graph = library_tools.citation_graph([row['id'] for row in rows])
+        lines.extend(('', '## 引用关系'))
+        for edge in graph['edges']:
+            titles = {item['id']: item['title'] for item in table['papers']}
+            url = f"{base_url}/api/documents/{edge['source']}/file#page={edge['page']}"
+            lines.append(f"- {titles[edge['source']]} → {titles[edge['target']]}。[参考文献原页]({url})")
+        if not graph['edges']:
+            lines.append('当前范围内未发现可核对的引用边。')
+        lines.extend(('', '## 写作提纲', authoring.outline(task['question'], rows)['markdown'].replace('/api/documents/', base_url + '/api/documents/')))
+    lines.extend(('', '## 执行记录', *[f"- {event['tool']} · {event['message']}" for event in task['events']]))
+    return '\n'.join(lines) + '\n'

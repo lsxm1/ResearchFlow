@@ -138,6 +138,14 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(left['status'], 'candidate')
         self.assertEqual(right['status'], 'cited_summary')
 
+    def test_compact_extractor_rejects_altered_number(self):
+        cell = {'document_id': 'left', 'status': 'candidate', 'source_id': 'left-block',
+                'quote': 'Training used eight NVIDIA P100 GPUs.'}
+        rows = [{'key': 'hardware', 'cells': [cell]}]
+        with patch.dict(os.environ, {'RF_MODEL_PROFILE': 'compact'}), patch('app.agent.chat_completion', return_value=('90 NVIDIA P100 GPUs', 'stop')):
+            self.assertEqual(summarize_cells('test', 'Compare the hardware', rows), 0)
+        self.assertEqual(cell['status'], 'candidate')
+
 
 if __name__ == '__main__':
     unittest.main()

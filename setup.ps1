@@ -11,9 +11,10 @@ if (-not (Test-Path -LiteralPath '.venv\Scripts\python.exe')) {
 }
 & '.\.venv\Scripts\python.exe' -m ensurepip --upgrade
 if ($LASTEXITCODE -ne 0) { throw 'Failed to bootstrap pip.' }
-& '.\.venv\Scripts\python.exe' -m pip install -r backend/requirements.txt
+& '.\.venv\Scripts\python.exe' -m pip install -r backend/requirements-lock.txt
 if ($LASTEXITCODE -ne 0) { throw 'Backend dependency installation failed.' }
 Set-Location -LiteralPath (Join-Path $PSScriptRoot 'frontend')
-& npm.cmd install
+& npm.cmd ci
 if ($LASTEXITCODE -ne 0) { throw 'Frontend dependency installation failed.' }
-Write-Output 'Ready. Run start-backend.ps1 and start-frontend.ps1 in separate terminals.'
+& (Join-Path $PSScriptRoot 'setup-ocr.ps1')
+Write-Output 'Ready. Run start.ps1 for the single-server workbench.'

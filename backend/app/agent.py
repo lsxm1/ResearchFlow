@@ -6,6 +6,7 @@ actual evidence. Quote validation prevents invented citations, not every reasoni
 """
 import json
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import httpx
@@ -32,17 +33,27 @@ def update(task_id, *, status=None, event=None, result=None):
             con.execute('UPDATE tasks SET result=? WHERE id=?', (json.dumps(result, ensure_ascii=False), task_id))
 
 
-def call_model(system: str, payload: dict):
+def chat_completion(system: str, content: str, *, structured: bool, max_tokens=None):
     cfg = model_config()
     headers = {'Authorization': f"Bearer {cfg['key']}"} if cfg['key'] else {}
+    request = {'model': cfg['model'], 'temperature': 0,
+               'messages': [{'role': 'system', 'content': system},
+                            {'role': 'user', 'content': content}]}
+    if structured and os.getenv('RF_MODEL_JSON_MODE') == '1':
+        request['response_format'] = {'type': 'json_object'}
+    if max_tokens is not None:
+        request['max_tokens'] = max_tokens
+    elif os.getenv('RF_MODEL_MAX_TOKENS', '').isdigit():
+        request['max_tokens'] = max(64, int(os.environ['RF_MODEL_MAX_TOKENS']))
     with httpx.Client(timeout=httpx.Timeout(90, connect=10), trust_env=False) as client:
-        response = client.post(cfg['base_url'] + '/chat/completions', headers=headers, json={
-            'model': cfg['model'], 'temperature': 0,
-            'messages': [{'role': 'system', 'content': system},
-                         {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)}],
-        })
+        response = client.post(cfg['base_url'] + '/chat/completions', headers=headers, json=request)
         response.raise_for_status()
-        raw = response.json()['choices'][0]['message']['content'].strip()
+        choice = response.json()['choices'][0]
+    return choice['message']['content'].strip(), choice.get('finish_reason')
+
+
+def call_model(system: str, payload: dict):
+    raw, _ = chat_completion(system, json.dumps(payload, ensure_ascii=False), structured=True)
     if raw.startswith('```'):
         raw = raw.split('\n', 1)[1].rsplit('```', 1)[0]
     return json.loads(raw)
