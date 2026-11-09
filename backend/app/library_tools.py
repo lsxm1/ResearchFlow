@@ -159,6 +159,17 @@ def render_page(doc_id, page):
         return source.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False).tobytes('png')
 
 
+def page_anchor(doc_id, page, bbox):
+    with pymupdf.open(UPLOADS / f'{doc_id}.pdf') as pdf:
+        source = pdf[page - 1]
+        bounds = source.rect
+        rect = (pymupdf.Rect(bbox) * source.rotation_matrix) & bounds
+        if rect.is_empty:
+            return None
+        return [(rect.x0 - bounds.x0) / bounds.width, (rect.y0 - bounds.y0) / bounds.height,
+                rect.width / bounds.width, rect.height / bounds.height]
+
+
 def normalize(text):
     return ' '.join(words(re.sub(r'(?<=\w)-\s*\n\s*(?=\w)', '', text)))
 

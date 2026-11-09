@@ -9,6 +9,7 @@ import httpx
 
 from . import agent, arxiv
 from .compare_plan import DEFAULT_FIELDS, FIELDS, MAX_FIELDS, plan_with_model, requested_fields, target_from_question
+from .comparison_facts import FACETS, grounded_findings, identify
 from .config import model_config
 from .db import connect
 from .documents import words
@@ -86,6 +87,27 @@ def match_evidence(query, doc_id, field_key):
     return candidate
 
 
+def find_facets(task_id, paper, key, model_query, evidence):
+    excerpts = []
+    for facet in FACETS[key]:
+        query = f'{facet.query} {model_query}'.strip()
+        item = {'label': facet.label, 'status': 'missing', 'searched_queries': [query]}
+        for index, attempt in enumerate((query, facet.retry)):
+            if index:
+                event(task_id, 'retry_evidence', f'{paper["filename"]} 的「{facet.label}」缺少可核对证据，补查。')
+                item['searched_queries'].append(attempt)
+            for source in retrieve(attempt, [paper['id']], limit=12):
+                kind = identify(source['text'], facet)
+                if kind:
+                    evidence[source['id']] = source
+                    item.update(kind=kind, status='verified_excerpt', source_id=source['id'], quote=source['text'].strip())
+                    break
+            if item['status'] == 'verified_excerpt':
+                break
+        excerpts.append(item)
+    return excerpts
+
+
 def find_cells(task_id, papers, fields, queries):
     rows = []
     evidence = {}
@@ -96,6 +118,23 @@ def find_cells(task_id, papers, fields, queries):
             query = queries.get(key, field.query)
             retry = field.query if query != field.query else field.retry
             cell = {'document_id': paper['id'], 'status': 'missing', 'searched_queries': [query]}
+            if key in FACETS:
+                excerpts = find_facets(task_id, paper, key, queries.get(key, ''), evidence)
+                cell = {'document_id': paper['id'], 'status': 'missing', 'excerpts': excerpts}
+                verified = [item for item in excerpts if item['status'] == 'verified_excerpt']
+                if verified:
+                    cell['status'] = 'verified_excerpt' if len(verified) == len(excerpts) else 'partial'
+                    cells.append(cell)
+                    continue
+                # Keep the prior broad excerpt available as a lead, even when it
+                # doesn't establish a specific fact used by the comparison.
+                candidate = match_evidence(query, paper['id'], key)
+                if candidate:
+                    source, quote, _ = candidate
+                    evidence[source['id']] = source
+                    cell.update(status='candidate', source_id=source['id'], quote=quote)
+                cells.append(cell)
+                continue
             matched = match_evidence(query, paper['id'], key)
             if matched is None or (key == 'hardware' and matched[2] == 'candidate'):
                 reason = '首轮只找到硬件提及，补查训练设备数量。' if matched else '首轮未命中，换关键词补查。'
@@ -116,7 +155,7 @@ def find_cells(task_id, papers, fields, queries):
 
 def summarize_cells(task_id, question, rows):
     candidates = {(row['key'], cell['document_id']): cell for row in rows if row['key'] != 'hardware'
-                  for cell in row['cells'] if cell['status'] == 'candidate'}
+                  for cell in row['cells'] if cell['status'] == 'candidate' and 'excerpts' not in cell}
     if not candidates:
         return 0
     if os.getenv('RF_MODEL_PROFILE') == 'compact':
@@ -186,7 +225,9 @@ def execute(task_id: str, target: str):
         if len(fields) > MAX_FIELDS:
             warnings.append(f'本次对比展示前 {MAX_FIELDS} 个字段，请分次查询其余字段。')
             fields = fields[:MAX_FIELDS]
-        event(task_id, 'plan_comparison', '拟对比：' + '、'.join(FIELDS[key].label for key in fields) + '。')
+        labels = [label for key in fields for label in
+                  ([facet.label for facet in FACETS[key]] if key in FACETS else [FIELDS[key].label])]
+        event(task_id, 'plan_comparison', f'目标论文 {target}。拟对比：' + '、'.join(labels) + '。')
         target_paper = local_paper(target)
         event(task_id, 'check_library', '复用已入库论文。' if target_paper else '目标论文尚未入库，将查找 arXiv。')
         if target_paper is None:
@@ -206,6 +247,9 @@ def execute(task_id: str, target: str):
             con.execute('UPDATE tasks SET document_ids=? WHERE id=?',
                         (json.dumps([paper['id'] for paper in papers]), task_id))
         rows, evidence = find_cells(task_id, papers, fields, queries)
+        findings = grounded_findings(papers, rows)
+        if findings:
+            event(task_id, 'verify_comparison', f'{len(findings)} 条对比结论具备两篇论文的原文出处。')
         summaries = 0
         if use_model:
             try:
@@ -217,7 +261,7 @@ def execute(task_id: str, target: str):
             warnings.append('部分字段仅找到原文候选，请回到原页核对。')
         columns = [{'id': paper['id'], 'title': paper['title'], 'filename': paper['filename']} for paper in papers]
         result = {'mode': 'model_assisted' if summaries else 'evidence_only', 'claims': [], 'evidence': evidence,
-                  'warnings': warnings, 'comparison': {'papers': columns, 'rows': rows}}
+                  'warnings': warnings, 'comparison': {'papers': columns, 'rows': rows, 'findings': findings}}
         agent.update(task_id, status='completed', result=result,
                      event={'step': 'complete', 'tool': 'save_result', 'message': '对比表已保存。'})
     except (ValueError, httpx.HTTPError) as exc:

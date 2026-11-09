@@ -93,6 +93,37 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(source['page'], 1)
         self.assertEqual(len(source['bbox']), 4)
 
+    def test_comparison_keeps_step_and_duration_evidence_independently(self):
+        base = self.upload_ready()
+        with pymupdf.open() as pdf:
+            pdf.set_metadata({'title': 'Schedule Evidence'})
+            page = pdf.new_page()
+            page.insert_text((50, 80), 'We train with a batch size of 256 sequences for 40,000 steps.')
+            page = pdf.new_page()
+            page.insert_text((50, 80), 'Each pre-training took 4 days to complete.')
+            page.set_rotation(90)
+            target_pdf = pdf.tobytes()
+        target = self.client.post('/api/documents', files={'file': ('schedule.pdf', target_pdf)}).json()['document']['id']
+        wait_for(self.client, f'/api/documents/{target}', 'status', {'ready', 'failed'})
+        job = self.client.post('/api/tasks/compare', json={
+            'question': 'Compare training steps and training duration.',
+            'document_ids': [base], 'target_paper': 'Schedule Evidence',
+        }).raise_for_status().json()
+        result = wait_for(self.client, f"/api/tasks/{job['id']}", 'status', {'completed', 'failed'})['result']
+        left, right = result['comparison']['rows'][0]['cells']
+        self.assertEqual([item['status'] for item in left['excerpts']], ['missing', 'missing'])
+        self.assertTrue(all(len(item['searched_queries']) == 2 for item in left['excerpts']))
+        self.assertTrue(all(len(item['searched_queries']) == 1 for item in right['excerpts']))
+        self.assertEqual(right['status'], 'verified_excerpt')
+        sources = {source['id']: source for source in result['evidence']}
+        steps, duration = [sources[item['source_id']] for item in right['excerpts']]
+        self.assertEqual((steps['page'], duration['page']), (1, 2))
+        reader = self.client.get(f'/api/read/{target}/pages/2', params={'evidence_id': duration['id']}).json()
+        self.assertIn('4 days', reader['text'])
+        self.assertGreater(reader['highlight'][3], reader['highlight'][2])
+        wrong_page = self.client.get(f'/api/read/{target}/pages/1', params={'evidence_id': duration['id']}).json()
+        self.assertIsNone(wrong_page['highlight'])
+
     def test_natural_hardware_question_reaches_actual_gpu_evidence(self):
         doc_id = self.upload_ready()
         result = self.client.post('/api/tasks', json={'question':'What hardware and training schedule were used?', 'document_ids':[doc_id]})

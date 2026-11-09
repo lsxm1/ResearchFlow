@@ -6,8 +6,14 @@ import './style.css';
 
 type Paper = {id: string; title: string; filename: string; status: string; page_count: number; processed_pages: number; text_pages: number; file_url: string; error?: string; version?: number};
 type Evidence = {id: string; document_id: string; title: string; filename: string; page: number; text: string; bbox: number[]; score: number; file_url: string; source?: 'native' | 'ocr'};
-type ComparisonCell = {document_id: string; status: 'missing' | 'candidate' | 'cited_summary' | 'verified_excerpt'; source_id?: string; quote?: string; text?: string; searched_queries?: string[]};
-type Comparison = {papers: {id: string; title: string; filename: string}[]; rows: {key: string; label: string; cells: ComparisonCell[]}[]};
+type Citation = {source_id: string; quote: string};
+type ComparisonExcerpt = {label: string; source_id?: string; quote?: string; searched_queries: string[]};
+type ComparisonCell = {document_id: string; status: 'missing' | 'candidate' | 'cited_summary' | 'verified_excerpt' | 'partial'; source_id?: string; quote?: string; text?: string; searched_queries?: string[]; excerpts?: ComparisonExcerpt[]};
+type Comparison = {
+  papers: {id: string; title: string; filename: string}[];
+  rows: {key: string; label: string; cells: ComparisonCell[]}[];
+  findings?: {label: string; text: string; citations: Citation[]}[];
+};
 type Task = {id: string; question: string; document_ids: string[]; status: string; events: {step: string; message: string; tool: string; time: string}[]; result: null | {mode: string; claims: {text: string; source_id: string; quote: string}[]; evidence: Evidence[]; warnings: string[]; comparison?: Comparison}};
 type Health = {model_mode: string; model_name?: string; version: string; ocr_available: boolean};
 type Duplicate = {document_id: string; title: string; similarity: number; recommendation: string};
@@ -39,9 +45,29 @@ function EvidenceCards({sources, openPaper}: {sources: Evidence[]; openPaper: (i
   </article>)}</>;
 }
 
-function ComparisonTable({table, evidence, openPaper}: {table: Comparison; evidence: Evidence[]; openPaper: (id: string, page: number) => void}) {
+function SourceExcerpt({source, quote, openEvidence, title}: {source: Evidence; quote?: string; openEvidence: (source: Evidence) => void; title?: string}) {
+  return <div className="source-excerpt">
+    <button className="source-jump" onClick={() => openEvidence(source)}>
+      {title && `${title} · `}第 {source.page} 页原文 ↗
+    </button>
+    <details><summary>{source.source === 'ocr' ? '查看 OCR 引句' : '查看引句'}</summary><p>{quote}</p></details>
+  </div>;
+}
+
+function ComparisonTable({table, evidence, openEvidence}: {table: Comparison; evidence: Evidence[]; openEvidence: (source: Evidence) => void}) {
   return <section>
-    <div className="output-title"><h3>训练设定对比</h3><span>{table.papers.length} 篇</span></div>
+    {!!table.findings?.length && <div>
+      <div className="output-title"><h3>跨论文结论</h3></div>
+      {table.findings.map(item => <article className="claim" key={item.label}>
+        <strong>{item.label}</strong><p>{item.text}</p>
+        {item.citations.map(ref => {
+          const source = evidence.find(candidate => candidate.id === ref.source_id);
+          return source && <SourceExcerpt key={source.id} source={source} quote={ref.quote}
+            openEvidence={openEvidence} title={source.title}/>;
+        })}
+      </article>)}
+    </div>}
+    <div className="output-title"><h3>分项对比证据</h3><span>{table.papers.length} 篇</span></div>
     <div className="comparison-scroll">
       <table className="comparison-table">
         <thead><tr><th scope="col">字段</th>{table.papers.map(paper => <th scope="col" key={paper.id}>{paper.title}</th>)}</tr></thead>
@@ -50,12 +76,24 @@ function ComparisonTable({table, evidence, openPaper}: {table: Comparison; evide
           {row.cells.map(cell => {
             const source = evidence.find(item => item.id === cell.source_id);
             return <td key={cell.document_id}>
-              {cell.status === 'missing' ? <span className="result-note">未检得匹配片段</span> : <>
+              {cell.excerpts?.map(excerpt => {
+                const cited = evidence.find(item => item.id === excerpt.source_id);
+                return <div className="facet-excerpt" key={excerpt.label}>
+                  <strong>{excerpt.label}</strong>
+                  {cited ? <SourceExcerpt source={cited} quote={excerpt.quote} openEvidence={openEvidence}/>
+                    : <p className="result-note">未检得足够证据</p>}
+                  {excerpt.searched_queries.length > 1 && <details><summary>查看补查</summary>
+                    <ol>{excerpt.searched_queries.map(query => <li key={query}>{query}</li>)}</ol>
+                  </details>}
+                </div>;
+              })}
+              {cell.status === 'missing' && !cell.excerpts && <span className="result-note">未检得匹配片段</span>}
+              {source && <>
                 {cell.text && <p>{cell.text}</p>}
                 {cell.status === 'verified_excerpt'
                   ? <><p>{cell.quote}</p>{source?.source === 'ocr' && <small className="result-note">OCR 识别片段</small>}</>
-                  : <details><summary>{source?.source === 'ocr' ? 'OCR 识别片段' : '原文片段'}</summary><p>{cell.quote}</p></details>}
-                {source && <button className="source-jump" onClick={() => openPaper(source.document_id, source.page)}>第 {source.page} 页 ↗</button>}
+                  : <details><summary>{source.source === 'ocr' ? 'OCR 识别片段' : '原文候选'}</summary><p>{cell.quote}</p></details>}
+                <button className="source-jump" onClick={() => openEvidence(source)}>第 {source.page} 页 ↗</button>
               </>}
               {(cell.searched_queries?.length ?? 0) > 1 && <details>
                 <summary>查看两次检索</summary>
@@ -75,6 +113,7 @@ function App() {
   const [current, setCurrent] = useState<string>('');
   const [page, setPage] = useState(1);
   const [pageInput, setPageInput] = useState('1');
+  const [readingSource, setReadingSource] = useState<string>();
   const [question, setQuestion] = useState('What hardware and training schedule were used?');
   const [targetPaper, setTargetPaper] = useState('');
   const [health, setHealth] = useState<Health | null>(null);
@@ -140,6 +179,16 @@ function App() {
 
   function openReading(id: string, targetPage: number) {
     setCurrent(id); setPage(targetPage); setPageInput(String(targetPage)); setView('reading');
+    setReadingSource(undefined);
+  }
+
+  function openEvidence(source: Evidence) {
+    if (!papers.some(paper => paper.id === source.document_id)) {
+      setError('该文献已移除，无法打开原文。');
+      return;
+    }
+    openReading(source.document_id, source.page);
+    setReadingSource(source.id);
   }
 
   async function upload(files: FileList | null) {
@@ -211,7 +260,7 @@ function App() {
       {error && <div className="banner error" role="alert">{error}<button onClick={() => setError('')} aria-label="关闭错误提示">×</button></div>}
       {notice && <div className="banner" role="status">{notice}<button onClick={() => setNotice('')} aria-label="关闭提示">×</button></div>}
       {!health && <div className="banner error">后端尚未连接。请运行项目中的 start-backend.ps1。</div>}
-      {view === 'reading' ? <Reading papers={readable} paperId={current} page={page} open={openReading}/>
+      {view === 'reading' ? <Reading papers={readable} paperId={current} page={page} open={openReading} evidenceId={readingSource}/>
         : view === 'discovery' ? <Discovery open={openPaper}/>
         : view === 'graph' ? <Graph ids={scopedPapers} open={openReading}/>
         : view === 'writing' ? <Writing ids={scopedPapers}/>
@@ -250,13 +299,13 @@ function App() {
           <div className="task-compose"><label htmlFor="question">你希望从论文中找到什么？</label><textarea id="question" value={question} onChange={e => setQuestion(e.target.value)} maxLength={2000}/><div className="examples"><button onClick={() => setQuestion('What hardware and training schedule were used?')}>训练硬件</button><button onClick={() => setQuestion('What are the Adam beta and learning rate hyperparameters?')}>超参数</button><button onClick={() => setQuestion('Compare the BLEU results for English to German and English to French.')}>实验指标</button></div><button className="primary" onClick={() => void submit()} disabled={!health || !eligibleCount || question.trim().length < 2 || submitting}>{submitting ? '提交中…' : health?.model_mode === 'configured' ? '执行研究任务 →' : '检索原文证据 →'}</button><p className="compose-note">{health?.model_mode === 'configured' ? '使用后端配置的模型；引用校验通过仍需人工核对。' : '当前不生成AI答案，不消耗大模型API额度。'}</p></div>
           <details className="task-compose compare-form">
             <summary>补齐论文并对比</summary>
-            <p className="compose-note">勾选一篇已入库论文。在上方问题中写下另一篇的 arXiv 编号或《完整标题》，并说明要比较的内容。</p>
+            <p className="compose-note">勾选一篇已入库论文。在上方问题中写下另一篇论文和对比意图。可使用 BERT、arXiv 编号或《完整标题》。</p>
             <label htmlFor="target-paper">目标论文（可选，优先使用此栏）</label>
             <input id="target-paper" value={targetPaper} onChange={e => setTargetPaper(e.target.value)} maxLength={240}/>
             <div className="examples"><button onClick={() => {
               setTargetPaper('');
-              setQuestion('对比当前论文和 arXiv:1810.04805 的训练时长、序列长度和训练能耗。');
-            }}>填入 BERT 示例</button></div>
+              setQuestion('BERT 继承了 Transformer Encoder 的什么，又改了什么？');
+            }}>填入 BERT 架构示例</button></div>
             <button className="primary" onClick={() => void submit(true)} disabled={!health || eligibleCount !== 1 || question.trim().length < 2 || submitting}>补齐并对比 →</button>
           </details>
           {tasks.length > 0 && <div className="task-history"><label htmlFor="history">任务记录</label><select id="history" value={taskId} onChange={e => setTaskId(e.target.value)}><option value="">选择已保存的任务</option>{tasks.map(t => <option key={t.id} value={t.id}>{t.question.slice(0,55)} · {t.status}</option>)}</select></div>}
@@ -266,7 +315,7 @@ function App() {
             {task.result?.warnings.map((w,i) => <p className="warning" key={i}>{w}</p>)}
             {!!task.result?.claims.length && <><h3>有来源的结论</h3>{task.result.claims.map((claim,i) => {const source = task.result?.evidence.find(x => x.id === claim.source_id); return <article className="claim" key={i}><p>{claim.text}</p><blockquote>{claim.quote}</blockquote>{source && <button onClick={() => openPaper(source.document_id,source.page)}>原文 · 第{source.page}页 ↗</button>}</article>;})}</>}
             {task.result?.comparison ? <>
-              <ComparisonTable table={task.result.comparison} evidence={task.result.evidence} openPaper={openReading}/>
+              <ComparisonTable table={task.result.comparison} evidence={task.result.evidence} openEvidence={openEvidence}/>
               <p><a href={`/api/tasks/${task.id}/report.md`}>下载研究报告 · Markdown</a></p>
             </> : task.result && task.result.mode !== 'error' && task.document_ids.length > 1 ? <>
               <div className="output-title"><h3>多文献证据对照</h3><span>{task.document_ids.length} 篇</span></div>

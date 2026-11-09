@@ -60,12 +60,17 @@ def reading_index(doc_id: str):
 
 
 @router.get('/read/{doc_id}/pages/{page}')
-def reading_page(doc_id: str, page: int, language: Literal['Chinese', 'English'] = 'Chinese'):
+def reading_page(doc_id: str, page: int, language: Literal['Chinese', 'English'] = 'Chinese',
+                 evidence_id: str | None = Query(None, max_length=100)):
     check_page(doc_id, page)
     with connect() as con:
         row = con.execute('SELECT text,source FROM pages WHERE document_id=? AND page=?', (doc_id, page)).fetchone()
+        anchor = con.execute('SELECT bbox FROM chunks WHERE id=? AND document_id=? AND page=?',
+                             (evidence_id, doc_id, page)).fetchone() if evidence_id else None
     text = row['text'] if row else ''
+    highlight = pdf_operation(library_tools.page_anchor, doc_id, page, json.loads(anchor['bbox'])) if anchor else None
     return {'text': text, 'source': row['source'] if row else 'native',
+            'highlight': highlight,
             'translation': authoring.get_translation(doc_id, page, text, language),
             'citations': list(dict.fromkeys(re.findall(r'\[[1-9][0-9]{0,3}\]', text)))[:40]}
 
@@ -269,23 +274,38 @@ def comparison_report(task, base_url):
     result = task['result']
     table = result['comparison']
     sources = {source['id']: source for source in result['evidence']}
+    def citation(source, quote):
+        page = ' '.join(quote.splitlines())
+        ocr = ' · OCR' if source.get('source') == 'ocr' else ''
+        return f"{page} [{source['title']} · 第 {source['page']} 页{ocr}]({base_url}{source['file_url']})"
+
     lines = ['# ResearchFlow 研究报告', '', '## 研究问题', task['question'], '', '## 论文',
-             *[f"- {item['title']} · {item['filename']}" for item in table['papers']], '', '## 分字段证据']
+             *[f"- {item['title']} · {item['filename']}" for item in table['papers']]]
+    if table.get('findings'):
+        lines.extend(('', '## 跨论文结论'))
+        for item in table['findings']:
+            lines.append(f"- **{item['label']}**。{item['text']}")
+            for ref in item['citations']:
+                if ref['source_id'] in sources:
+                    lines.append('  - ' + citation(sources[ref['source_id']], ref['quote']))
+    lines.extend(('', '## 分字段证据'))
     for row in table['rows']:
         lines.extend(('', f"### {row['label']}"))
         for column, cell in zip(table['papers'], row['cells'], strict=True):
             source = sources.get(cell.get('source_id'))
             lines.append(f"- **{column['title']}**")
-            if source is None:
+            for excerpt in cell.get('excerpts', []):
+                cited = sources.get(excerpt.get('source_id'))
+                value = citation(cited, excerpt['quote']) if cited else '未检得足够证据。'
+                lines.append(f"  - **{excerpt['label']}** · {value}")
+                lines.append('    - 检索词 · ' + ' / '.join(excerpt['searched_queries']))
+            if source is None and not cell.get('excerpts'):
                 lines.append('  - 未检得匹配片段。')
-            else:
+            elif source is not None:
                 if cell.get('text'):
                     lines.append(f"  - 模型摘要：{cell['text']}")
-                quote = ' '.join(cell['quote'].splitlines())
-                label = '训练设定原文' if cell['status'] == 'verified_excerpt' else '原文片段'
-                if source.get('source') == 'ocr':
-                    label = 'OCR 识别片段'
-                lines.append(f"  - {label}：{quote} [第 {source['page']} 页]({base_url}{source['file_url']})")
+                label = '训练设定原文' if cell['status'] == 'verified_excerpt' else '原文候选'
+                lines.append(f"  - {label} · " + citation(source, cell['quote']))
             if cell.get('searched_queries'):
                 lines.append('  - 检索词：' + '；'.join(cell['searched_queries']))
     rows = []

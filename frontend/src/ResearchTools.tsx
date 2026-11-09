@@ -6,7 +6,7 @@ type OpenPaper = (id: string, page: number) => void;
 type Paper = {id: string; title: string; filename: string; page_count: number; status: string};
 type Ref = {label: string; page: number; text: string; citation_page: number | null};
 type Index = {title: string; metadata: {author: string}; abstract: string; outline: {title: string; page: number; level: number}[]; references: Ref[]};
-type Page = {text: string; source: string; translation: string | null; citations: string[]};
+type Page = {text: string; source: string; translation: string | null; citations: string[]; highlight?: [number, number, number, number] | null};
 type Structure = {tables: {rows: (string | null)[][]}[]; figures: {bbox: number[]}[]; formula_candidates: {text: string}[]};
 type TaskStatus = {status: string; events: {message: string}[]; result?: {warnings: string[]}};
 
@@ -27,7 +27,7 @@ function ErrorNote({error}: {error: string}) {
   return error ? <p className="banner error" role="alert">{error}</p> : null;
 }
 
-export function Reading({papers, paperId, page, open}: {papers: Paper[]; paperId: string; page: number; open: OpenPaper}) {
+export function Reading({papers, paperId, page, open, evidenceId}: {papers: Paper[]; paperId: string; page: number; open: OpenPaper; evidenceId?: string}) {
   const paper = papers.find(item => item.id === paperId) ?? papers[0];
   const [index, setIndex] = useState<Index>();
   const [data, setData] = useState<Page>();
@@ -43,8 +43,20 @@ export function Reading({papers, paperId, page, open}: {papers: Paper[]; paperId
   const [error, setError] = useState('');
   const original = useRef<HTMLDivElement>(null);
   const translated = useRef<HTMLDivElement>(null);
+  const pageImage = useRef<HTMLImageElement>(null);
+  const evidenceHighlight = useRef<HTMLSpanElement>(null);
   const scrolling = useRef(false);
   const pageNumber = Math.max(1, Math.min(page, paper?.page_count || 1));
+
+  function focusEvidence() {
+    const panel = original.current;
+    const highlight = evidenceHighlight.current;
+    if (panel && highlight && pageImage.current?.naturalWidth) {
+      panel.scrollTop += highlight.getBoundingClientRect().top - panel.getBoundingClientRect().top - 24;
+    }
+  }
+
+  useEffect(focusEvidence, [data?.highlight]);
 
   useEffect(() => {
     let live = true;
@@ -60,9 +72,11 @@ export function Reading({papers, paperId, page, open}: {papers: Paper[]; paperId
     setData(undefined);
     setStructure(undefined);
     setTranslation('');
-    if (paper?.id) api<Page>(`/read/${paper.id}/pages/${pageNumber}?language=${language}`).then(value => {if (live) setData(value);}).catch(e => {if (live) setError(message(e));});
+    const query = new URLSearchParams({language});
+    if (evidenceId) query.set('evidence_id', evidenceId);
+    if (paper?.id) api<Page>(`/read/${paper.id}/pages/${pageNumber}?${query}`).then(value => {if (live) setData(value);}).catch(e => {if (live) setError(message(e));});
     return () => { live = false; };
-  }, [paper?.id, pageNumber, language, refresh]);
+  }, [paper?.id, pageNumber, language, refresh, evidenceId]);
 
   useEffect(() => {
     if (!job) return;
@@ -158,7 +172,12 @@ export function Reading({papers, paperId, page, open}: {papers: Paper[]; paperId
     </details>}
     <div className="tool-columns">
       <div><h3>PDF 原版与文本</h3><div className="read-scroll" ref={original} onScroll={event => sync(event, translated.current)}>
-        <img src={`/api/read/${paper.id}/pages/${pageNumber}/image`} alt={`原始 PDF 第 ${pageNumber} 页`}/>
+        <div className="pdf-page">
+          <img ref={pageImage} onLoad={focusEvidence} src={`/api/read/${paper.id}/pages/${pageNumber}/image`} alt={`原始 PDF 第 ${pageNumber} 页`}/>
+          {data?.highlight && <span className="pdf-highlight" ref={evidenceHighlight} role="img" aria-label="原文证据位置"
+            style={{left: `${data.highlight[0] * 100}%`, top: `${data.highlight[1] * 100}%`,
+              width: `${data.highlight[2] * 100}%`, height: `${data.highlight[3] * 100}%`}}/>}
+        </div>
         <pre>{data?.text || '本页暂无可提取文本。'}</pre>
       </div></div>
       <div><h3>{language === 'Chinese' ? '中文译文' : '学术英文译文'}</h3><div className="read-scroll" ref={translated} onScroll={event => sync(event, original.current)}>

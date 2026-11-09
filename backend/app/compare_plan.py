@@ -28,7 +28,7 @@ FIELDS = {
     'hardware': Field('训练硬件', '训练硬件|硬件|显卡|gpu|tpu|hardware|训练成本|training cost',
                       'training hardware GPU TPU accelerator', 'trained NVIDIA GPU Cloud TPU devices',
                       r'\b(?:GPUs?|TPUs?|NVIDIA|accelerators?)\b'),
-    'schedule': Field('训练时长与步数', '训练时长|训练时间|训练步数|步数|训练成本|training cost|training time|training steps|training duration',
+    'schedule': Field('训练时长与步数', '训练时长|训练时间|训练步数|步数|多少步|耗时|训练多久|花了多久|训练成本|training cost|training time|training steps|training duration|training schedule|wall clock',
                       'training steps trained hours days total schedule', 'trained for steps wall clock duration epochs',
                       r'\b(?:\d[\d,]*(?:\.\d+)?\s*(?:million\s+)?(?:steps|hours?|days?|epochs?)|(?:a million|one million) steps)\b'),
     'parameters': Field('参数规模', '参数量|参数规模|参数数量|parameter count|parameters|model size',
@@ -40,7 +40,7 @@ FIELDS = {
     'optimizer': Field('优化器与学习率', '优化器|学习率|预热|超参数|optimizer|learning rate|warmup|hyperparameters',
                        'Adam optimizer learning rate warmup beta hyperparameters', 'training optimization learning rate decay optimizer',
                        r'\b(?:AdamW?|learning rate|warmup)\b'),
-    'architecture': Field('模型结构', '模型结构|架构|编码器|解码器|attention heads|architecture|encoder|decoder',
+    'architecture': Field('模型结构', '模型结构|架构|编码器|解码器|承袭|沿用|继承|attention heads|architecture|encoder|decoder',
                           'model architecture encoder decoder layers attention heads hidden size', 'network architecture layers hidden size attention',
                           r'\b(?:encoder|decoder|attention heads?|hidden size|layers)\b'),
     'metrics': Field('实验指标', '实验指标|评测指标|准确率|bleu|accuracy|perplexity|f1|metrics',
@@ -53,6 +53,7 @@ FIELDS = {
 }
 DEFAULT_FIELDS = ('objective', 'data', 'hardware')
 MAX_FIELDS = 6
+PAPER_ALIASES = {'BERT': '1810.04805'}
 
 
 def requested_fields(question: str):
@@ -63,7 +64,12 @@ def requested_fields(question: str):
                    if (m := re.search(r'(?<![A-Za-z])' + re.escape(alias) + r'(?![A-Za-z])', question, re.I))]
         if matches:
             positions.append((min(matches), key))
-    return [key for _, key in sorted(positions, key=lambda item: item[0])]
+    fields = [key for _, key in sorted(positions, key=lambda item: item[0])]
+    if ('architecture' in fields and 'objective' not in fields
+            and re.search(r'继承|承袭|沿用|\binherit', question, re.I)
+            and re.search(r'改了什么|改变了什么|抛弃了什么|\bwhat changed\b', question, re.I)):
+        fields.append('objective')
+    return fields
 
 
 def target_from_question(question, base):
@@ -74,6 +80,10 @@ def target_from_question(question, base):
     titles = list(dict.fromkeys(title.strip() for title in re.findall(r'《([^》]{2,240})》', question)
                                if words(title) != words(base['title'])))
     choices = ids if ids else titles
+    if not choices:
+        choices = [identifier for alias, identifier in PAPER_ALIASES.items()
+                   if identifier != current_id and
+                   re.search(rf'(?<![\w-]){alias}(?![\w-])', question, re.I | re.ASCII)]
     if len(choices) > 1:
         raise ValueError('问题里有多个候选目标，请在目标论文栏明确选择一篇。')
     return choices[0] if choices else ''

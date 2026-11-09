@@ -57,9 +57,32 @@ def verify(client: httpx.Client, fixture: Path, empty: bool) -> None:
         assert cell['quote'] in get(path).json()['text']
         return path
 
-    task, rows, sources = compare('比较 arXiv:1810.04805 和当前论文的训练硬件与训练能耗。')
+    architecture, _, sources = compare('BERT 继承了 Transformer Encoder 的什么，又改了什么？')
     if empty:
-        assert any(event['tool'] == 'download_pdf' for event in task['events']), 'Expected automatic BERT import.'
+        assert any(event['tool'] == 'download_pdf' for event in architecture['events']), 'Expected automatic BERT import.'
+    findings = architecture['result']['comparison']['findings']
+    assert [item['label'] for item in findings] == ['架构的沿袭与差异', '训练目标的差异']
+    for finding, pages in zip(findings, ((3, 3, 3), (5, 13)), strict=True):
+        assert {sources[ref['source_id']]['document_id'] for ref in finding['citations']} == set(architecture['document_ids'])
+        for ref, page in zip(finding['citations'], pages, strict=True):
+            source = sources[ref['source_id']]
+            path = check_cell({'document_id': source['document_id'], **ref}, sources, page, ())
+            highlight = get(path + '?evidence_id=' + source['id']).json()['highlight']
+            assert highlight and all(0 <= value <= 1 for value in highlight) and min(highlight[2:]) > 0
+            other_doc = next(doc for doc in architecture['document_ids'] if doc != source['document_id'])
+            assert get(f'/api/read/{other_doc}/pages/{page}?evidence_id={source["id"]}').json()['highlight'] is None
+    report = get(f"/api/tasks/{architecture['id']}/report.md").text
+    assert all(item in report for item in ('## 跨论文结论', '## 引用关系', '## 写作提纲', '#page=3', '#page=13'))
+
+    _, schedule, sources = compare('比较 BERT 和当前论文的训练步数与训练耗时。')
+    for cell, page, steps, duration in zip(schedule['schedule'], (7, 13), ('300,000 steps', '1,000,000 steps'),
+                                            ('3.5 days', '4 days'), strict=True):
+        assert cell['status'] == 'verified_excerpt'
+        for item, expected in zip(cell['excerpts'], (steps, duration), strict=True):
+            check_cell({'document_id': cell['document_id'], **item}, sources, page, (expected,))
+    assert len({item['source_id'] for item in schedule['schedule'][1]['excerpts']}) == 2
+
+    task, rows, sources = compare('比较 arXiv:1810.04805 和当前论文的训练硬件与训练能耗。')
     assert len(rows['hardware']) == 2
     expected = (
         (7, ('8 NVIDIA P100 GPUs',)),
@@ -87,8 +110,8 @@ def verify(client: httpx.Client, fixture: Path, empty: bool) -> None:
     assert len(bert_tables) == 1 and len(bert_tables[0]['rows']) == 6
     assert ['No NSP', '83.9', '84.9', '86.5', '92.6', '87.9'] in bert_tables[0]['rows']
     assert any('warmup_steps' in formula['text'] for formula in structure(base, 7)['formula_candidates'])
-    print(f"PASS homepage, import, evidence, report and PDF structure; model={health['model_mode']}, "
-          f"hardware={task['id']}, data={data_task['id']}")
+    print(f"PASS homepage, import, grounded findings, multi-source evidence, highlights, report and PDF structure; "
+          f"model={health['model_mode']}, architecture={architecture['id']}, hardware={task['id']}, data={data_task['id']}")
 
 
 if __name__ == '__main__':
