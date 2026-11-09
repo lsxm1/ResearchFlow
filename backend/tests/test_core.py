@@ -15,6 +15,7 @@ os.environ['RF_MODEL_MODE'] = 'disabled'
 
 import pymupdf
 from fastapi.testclient import TestClient
+from app.comparison import summarize_cells
 from app.main import app
 
 
@@ -119,6 +120,23 @@ class CoreTests(unittest.TestCase):
         result = self.client.post('/api/documents', files={'file':('fake.pdf',b'not a PDF','application/pdf')})
         self.assertEqual(result.status_code, 415)
         self.assertEqual(self.client.get('/api/documents/unknown/file').status_code, 404)
+
+    def test_comparison_rejects_a_quote_from_the_other_paper(self):
+        left = {'document_id': 'left', 'status': 'candidate', 'source_id': 'left-block',
+                'quote': 'Training used eight NVIDIA P100 GPUs.'}
+        right = {'document_id': 'right', 'status': 'candidate', 'source_id': 'right-block',
+                 'quote': 'Training used four Cloud TPUs.'}
+        rows = [{'key': 'hardware', 'cells': [left, right]}]
+        response = {'cells': [
+            {'field': 'hardware', 'document_id': 'left', 'source_id': 'right-block',
+             'quote': right['quote'], 'text': 'Used four TPUs.'},
+            {'field': 'hardware', 'document_id': 'right', 'source_id': 'right-block',
+             'quote': right['quote'], 'text': 'Used four TPUs.'},
+        ]}
+        with patch('app.agent.call_model', return_value=response):
+            self.assertEqual(summarize_cells('test', 'Compare the hardware', rows), 1)
+        self.assertEqual(left['status'], 'candidate')
+        self.assertEqual(right['status'], 'cited_summary')
 
 
 if __name__ == '__main__':

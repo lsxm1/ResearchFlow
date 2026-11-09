@@ -2,3 +2,15 @@
 @media(min-width:1700px){main{padding:0 45px}.workspace{grid-template-columns:275px minmax(450px,1fr) 400px;gap:20px}.panel{min-height:730px}.paper-title{font-size:13px}.task-compose textarea{font-size:12px}.evidence p{font-size:12px}}
 @media(max-width:1250px){.nav{width:165px;padding:25px 12px}.brand{font-size:14px}.brand small{font-size:9px}main{padding:0 18px}.workspace{grid-template-columns:205px minmax(280px,1fr)}.agent{grid-column:1/-1;min-height:350px;height:auto;max-height:900px}.agent .task-output{max-height:650px}.panel-heading{padding:13px}.roadmap{grid-template-columns:repeat(2,1fr)}h1{font-size:22px}}
 @media(max-width:760px){.app{display:block}.nav{position:static;height:auto;width:100%;padding:15px;flex-direction:row;align-items:center;gap:8px}.brand{margin-right:auto;font-size:14px}.brand-symbol{font-size:25px}.brand small,.nav-label,.nav-bottom{display:none}.nav-item{font-size:10px;padding:8px}.nav-item span{display:none}main{padding:0 12px}header{height:55px}.mode-badge{font-size:8px;padding:6px}.page-heading{padding:22px 0}.page-heading p{font-size:10px;line-height:1.8}.phase{display:none}h1{font-size:20px}.workspace{display:flex;flex-direction:column;gap:12px}.panel{min-height:0;height:auto}.library{max-height:400px}.paper-list{max-height:230px}.reader{height:620px}.agent{max-height:none}.task-output{max-height:700px}.reader iframe{min-height:400px}.roadmap{grid-template-columns:1fr}footer{font-size:8px;line-height:1.8;flex-direction:column}.page-heading .eyebrow{font-size:8px}}
+
+.compare-form summary { cursor: pointer; font-size: 11px; color: #31573e; }
+.compare-form label { margin-top: 10px; }
+.compare-form input { width: 100%; border: 1px solid #dfe5d7; border-radius: 5px; padding: 7px; font-size: 11px; }
+.comparison-scroll { overflow-x: auto; }
+.comparison-table { width: 100%; border-collapse: collapse; font-size: 11px; line-height: 1.6; }
+.comparison-table th, .comparison-table td { border: 1px solid #dfe5d7; padding: 6px; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+.comparison-table th { background: #f2f6ed; }
+.comparison-table th[scope="row"] { min-width: 48px; }
+.comparison-table td p { margin: 5px 0; white-space: pre-wrap; }
+.comparison-table summary { cursor: pointer; color: #50694c; }
+.source-jump { padding: 5px 0; font-size: 10px; color: #28715d; }

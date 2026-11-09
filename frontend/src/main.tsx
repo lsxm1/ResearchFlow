@@ -4,7 +4,9 @@ import './style.css';
 
 type Paper = {id: string; title: string; filename: string; status: string; page_count: number; processed_pages: number; text_pages: number; file_url: string; error?: string; version?: number};
 type Evidence = {id: string; document_id: string; title: string; filename: string; page: number; text: string; bbox: number[]; score: number; file_url: string; source?: 'native' | 'ocr'};
-type Task = {id: string; question: string; document_ids: string[]; status: string; events: {step: string; message: string; tool: string; time: string}[]; result: null | {mode: string; claims: {text: string; source_id: string; quote: string}[]; evidence: Evidence[]; warnings: string[]}};
+type ComparisonCell = {document_id: string; status: 'missing' | 'candidate' | 'cited_summary'; source_id?: string; quote?: string; text?: string};
+type Comparison = {papers: {id: string; title: string; filename: string}[]; rows: {key: string; label: string; cells: ComparisonCell[]}[]};
+type Task = {id: string; question: string; document_ids: string[]; status: string; events: {step: string; message: string; tool: string; time: string}[]; result: null | {mode: string; claims: {text: string; source_id: string; quote: string}[]; evidence: Evidence[]; warnings: string[]; comparison?: Comparison}};
 type Health = {model_mode: string; model_name?: string; version: string; ocr_available: boolean};
 type Duplicate = {document_id: string; title: string; similarity: number; recommendation: string};
 
@@ -39,6 +41,30 @@ function EvidenceCards({sources, openPaper}: {sources: Evidence[]; openPaper: (i
   </article>)}</>;
 }
 
+function ComparisonTable({table, evidence, openPaper}: {table: Comparison; evidence: Evidence[]; openPaper: (id: string, page: number) => void}) {
+  return <section>
+    <div className="output-title"><h3>训练设定对比</h3><span>{table.papers.length} 篇</span></div>
+    <div className="comparison-scroll">
+      <table className="comparison-table">
+        <thead><tr><th scope="col">字段</th>{table.papers.map(paper => <th scope="col" key={paper.id}>{paper.title}</th>)}</tr></thead>
+        <tbody>{table.rows.map(row => <tr key={row.key}>
+          <th scope="row">{row.label}</th>
+          {row.cells.map(cell => {
+            const source = evidence.find(item => item.id === cell.source_id);
+            return <td key={cell.document_id}>
+              {cell.status === 'missing' ? <span className="result-note">未检得匹配片段</span> : <>
+                {cell.text && <p>{cell.text}</p>}
+                <details><summary>{source?.source === 'ocr' ? 'OCR 识别片段' : '原文片段'}</summary><p>{cell.quote}</p></details>
+                {source && <button className="source-jump" onClick={() => openPaper(source.document_id, source.page)}>第 {source.page} 页 ↗</button>}
+              </>}
+            </td>;
+          })}
+        </tr>)}</tbody>
+      </table>
+    </div>
+  </section>;
+}
+
 function App() {
   const [papers, setPapers] = useState<Paper[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
@@ -46,6 +72,7 @@ function App() {
   const [page, setPage] = useState(1);
   const [pageInput, setPageInput] = useState('1');
   const [question, setQuestion] = useState('What hardware and training schedule were used?');
+  const [targetPaper, setTargetPaper] = useState('');
   const [health, setHealth] = useState<Health | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [taskId, setTaskId] = useState('');
@@ -125,11 +152,14 @@ function App() {
     finally {setUploading(false); if (fileInput.current) fileInput.current.value = '';}
   }
 
-  async function submit() {
+  async function submit(compare = false) {
     setError(''); setSubmitting(true);
     try {
       const valid = selected.filter(id => papers.some(p => p.id === id && ['ready','partial'].includes(p.status)));
-      const response = await api<{id: string}>('/tasks', {method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({question, document_ids: valid})});
+      const response = await api<{id: string}>(compare ? '/tasks/compare' : '/tasks', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({question, document_ids: valid, ...(compare ? {target_paper: targetPaper.trim()} : {})}),
+      });
       setTaskId(response.id);
       setTasks(await api<Task[]>('/tasks'));
     } catch(e) {setError((e as Error).message);}
@@ -200,13 +230,24 @@ function App() {
         </section>
         <section className="panel agent"><div className="panel-heading"><div><h2>研究任务</h2><p>限定证据范围，让结果可核查</p></div><span className="tiny-mark">RF</span></div>
           <div className="task-compose"><label htmlFor="question">你希望从论文中找到什么？</label><textarea id="question" value={question} onChange={e => setQuestion(e.target.value)} maxLength={2000}/><div className="examples"><button onClick={() => setQuestion('What hardware and training schedule were used?')}>训练硬件</button><button onClick={() => setQuestion('What are the Adam beta and learning rate hyperparameters?')}>超参数</button><button onClick={() => setQuestion('Compare the BLEU results for English to German and English to French.')}>实验指标</button></div><button className="primary" onClick={() => void submit()} disabled={!health || !eligibleCount || question.trim().length < 2 || submitting}>{submitting ? '提交中…' : health?.model_mode === 'configured' ? '执行研究任务 →' : '检索原文证据 →'}</button><p className="compose-note">{health?.model_mode === 'configured' ? '使用后端配置的模型；引用校验通过仍需人工核对。' : '当前不生成AI答案，不消耗大模型API额度。'}</p></div>
+          <details className="task-compose compare-form">
+            <summary>补齐论文并对比</summary>
+            <p className="compose-note">勾选一篇已入库论文，再填写目标论文。对比训练目标、数据和硬件。</p>
+            <label htmlFor="target-paper">目标论文完整标题或 arXiv 编号</label>
+            <input id="target-paper" value={targetPaper} onChange={e => setTargetPaper(e.target.value)} maxLength={240}/>
+            <div className="examples"><button onClick={() => {
+              setTargetPaper('BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding');
+              setQuestion('对比两篇论文的训练目标、训练数据和训练硬件。');
+            }}>填入 BERT 示例</button></div>
+            <button className="primary" onClick={() => void submit(true)} disabled={!health || eligibleCount !== 1 || targetPaper.trim().length < 2 || question.trim().length < 2 || submitting}>补齐并对比 →</button>
+          </details>
           {tasks.length > 0 && <div className="task-history"><label htmlFor="history">任务记录</label><select id="history" value={taskId} onChange={e => setTaskId(e.target.value)}><option value="">选择已保存的任务</option>{tasks.map(t => <option key={t.id} value={t.id}>{t.question.slice(0,55)} · {t.status}</option>)}</select></div>}
           <div className="task-output" aria-live="polite">{task ? <>
             <div className="output-title"><h3>执行记录</h3><span className={`state ${task.status}`}>{({queued:'排队中',running:'执行中',completed:'已完成',failed:'失败'} as Record<string,string>)[task.status]}</span></div>
             <ol className="timeline">{task.events.map((event,i) => <li key={i}><strong>{event.tool}</strong><span>{event.message}</span></li>)}</ol>
             {task.result?.warnings.map((w,i) => <p className="warning" key={i}>{w}</p>)}
             {!!task.result?.claims.length && <><h3>有来源的结论</h3>{task.result.claims.map((claim,i) => {const source = task.result?.evidence.find(x => x.id === claim.source_id); return <article className="claim" key={i}><p>{claim.text}</p><blockquote>{claim.quote}</blockquote>{source && <button onClick={() => openPaper(source.document_id,source.page)}>原文 · 第{source.page}页 ↗</button>}</article>;})}</>}
-            {task.result && task.result.mode !== 'error' && task.document_ids.length > 1 ? <>
+            {task.result?.comparison ? <ComparisonTable table={task.result.comparison} evidence={task.result.evidence} openPaper={openPaper}/> : task.result && task.result.mode !== 'error' && task.document_ids.length > 1 ? <>
               <div className="output-title"><h3>多文献证据对照</h3><span>{task.document_ids.length} 篇</span></div>
               <p className="result-note">各篇按关键词相关性排序。点击页码核对片段。</p>
               {task.document_ids.map(id => {

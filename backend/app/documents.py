@@ -6,6 +6,7 @@ import math
 import re
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 import pymupdf
 from .config import TESSDATA, UPLOADS
 from .db import connect
@@ -13,6 +14,27 @@ from .db import connect
 log = logging.getLogger(__name__)
 # MuPDF is not safe to use concurrently from threads. One PDF worker serializes access.
 PDF_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix='pdf')
+
+
+def register_pdf(path: Path, filename: str, checksum: str, *, title=None, arxiv_id=None, version=None):
+    """Register a staged PDF and start the same parser for uploads and downloads."""
+    with path.open('rb') as handle:
+        if b'%PDF-' not in handle.read(1024):
+            raise ValueError('文件内容不是有效 PDF。')
+    name = Path(filename.replace('\\', '/')).name[:200] or 'paper.pdf'
+    with connect() as con:
+        con.execute('''INSERT INTO documents(id,filename,sha256,title,arxiv_id,version) VALUES (?,?,?,?,?,?)
+                       ON CONFLICT(sha256) DO UPDATE SET title=COALESCE(?,documents.title),
+                         arxiv_id=COALESCE(excluded.arxiv_id,documents.arxiv_id),
+                         version=COALESCE(excluded.version,documents.version)''',
+                    (path.stem, name, checksum, title or name, arxiv_id, version, title))
+        row = con.execute('SELECT * FROM documents WHERE sha256=?', (checksum,)).fetchone()
+    duplicate = row['id'] != path.stem
+    if duplicate:
+        path.unlink(missing_ok=True)
+    else:
+        PDF_POOL.submit(parse_document, row['id'])
+    return row, duplicate
 
 
 def words(text: str):
@@ -100,7 +122,9 @@ def parse_document(doc_id: str):
                         if not title:
                             lines = [line.strip() for line in text.splitlines() if line.strip()]
                             title = next((line for line in lines if 'Attention Is All You Need' in line), lines[0] if lines else row['filename'])
-                        con.execute('UPDATE documents SET title=?, arxiv_id=?, version=? WHERE id=?',
+                        con.execute('''UPDATE documents SET
+                                      title=CASE WHEN arxiv_id IS NOT NULL AND title!=filename THEN title ELSE ? END,
+                                      arxiv_id=COALESCE(arxiv_id,?), version=COALESCE(version,?) WHERE id=?''',
                                     (title[:240], match[1] if match else None, int(match[2]) if match else None, doc_id))
             status = 'needs_ocr' if text_pages == 0 else ('partial' if ocr_pages else 'ready')
             with connect() as con:

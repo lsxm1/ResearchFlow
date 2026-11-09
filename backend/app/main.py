@@ -1,14 +1,12 @@
 import hashlib
 import json
 import logging
-import sqlite3
 from contextlib import asynccontextmanager
-from pathlib import Path
 from uuid import uuid4
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from . import agent, documents
+from . import agent, comparison, documents
 from .config import MAX_UPLOAD, UPLOADS, model_config
 from .db import connect, document, init_db, task
 
@@ -67,24 +65,11 @@ async def upload(file: UploadFile = File(...)):
                     raise HTTPException(413, f'文件超过{MAX_UPLOAD // (1024*1024)}MB限制。')
                 digest.update(chunk)
                 handle.write(chunk)
-        with path.open('rb') as handle:
-            if b'%PDF-' not in handle.read(1024):
-                raise HTTPException(415, '请上传有效PDF文件。')
-        # Path components are never used for storage; both Windows and Unix names are stripped.
-        filename = Path((file.filename or 'paper.pdf').replace('\\', '/')).name[:200]
         try:
-            with connect() as con:
-                con.execute('INSERT INTO documents(id,filename,sha256,title) VALUES (?,?,?,?)',
-                            (doc_id, filename, digest.hexdigest(), filename))
-        except sqlite3.IntegrityError:
-            path.unlink(missing_ok=True)
-            with connect() as con:
-                existing = con.execute('SELECT * FROM documents WHERE sha256=?', (digest.hexdigest(),)).fetchone()
-            if existing is None:
-                raise
-            return {'document': document(existing), 'exact_duplicate': True}
-        documents.PDF_POOL.submit(documents.parse_document, doc_id)
-        return {'document': document(get_document(doc_id)), 'exact_duplicate': False}
+            row, duplicate = documents.register_pdf(path, file.filename or 'paper.pdf', digest.hexdigest())
+        except ValueError as exc:
+            raise HTTPException(415, str(exc)) from exc
+        return {'document': document(row), 'exact_duplicate': duplicate}
     except Exception:
         path.unlink(missing_ok=True)
         raise
@@ -156,8 +141,11 @@ class TaskRequest(BaseModel):
     document_ids: list[str] = Field(min_length=1, max_length=30)
 
 
-@app.post('/api/tasks', status_code=202)
-def create_task(body: TaskRequest):
+class CompareRequest(TaskRequest):
+    target_paper: str = Field(min_length=2, max_length=240)
+
+
+def enqueue_task(body: TaskRequest, runner, *args):
     ids = list(dict.fromkeys(body.document_ids))
     for doc_id in ids:
         row = get_document(doc_id)
@@ -167,8 +155,20 @@ def create_task(body: TaskRequest):
     with connect() as con:
         con.execute('INSERT INTO tasks(id,question,document_ids) VALUES (?,?,?)',
                     (task_id, body.question.strip(), json.dumps(ids)))
-    agent.TASK_POOL.submit(agent.execute, task_id)
+    agent.TASK_POOL.submit(runner, task_id, *args)
     return {'id': task_id, 'status': 'queued'}
+
+
+@app.post('/api/tasks', status_code=202)
+def create_task(body: TaskRequest):
+    return enqueue_task(body, agent.execute)
+
+
+@app.post('/api/tasks/compare', status_code=202)
+def create_comparison(body: CompareRequest):
+    if len(set(body.document_ids)) != 1 or len(body.target_paper.strip()) < 2:
+        raise HTTPException(422, '请选择一篇已入库论文，并填写要比较的另一篇论文标题或 arXiv 编号。')
+    return enqueue_task(body, comparison.execute, body.target_paper.strip())
 
 
 @app.get('/api/tasks')
