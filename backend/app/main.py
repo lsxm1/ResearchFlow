@@ -26,6 +26,7 @@ async def lifespan(app):
         con.execute("UPDATE tasks SET status='failed', result=? WHERE status IN ('queued','running')",
                     (json.dumps({'mode':'error','claims':[], 'evidence':[], 'warnings':['服务重启中断了任务，请重新提交。']}, ensure_ascii=False),))
         pending = con.execute("SELECT id FROM documents WHERE status IN ('queued','parsing')").fetchall()
+    documents.PDF_POOL.submit(documents.refresh_arxiv_titles)
     for row in pending:
         documents.PDF_POOL.submit(documents.parse_document, row['id'])
     scheduler = asyncio.create_task(discovery.run_scheduler())

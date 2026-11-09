@@ -72,6 +72,53 @@ def extract_blocks(page, use_ocr):
     return blocks, text, 'native', needs_ocr
 
 
+def arxiv_page_title(page):
+    """Read the prominent title lines rather than the first line of the PDF."""
+    lines = []
+    for block in page.get_text('dict', flags=pymupdf.TEXTFLAGS_TEXT)['blocks']:
+        for line in block['lines']:
+            left, top, _, _ = line['bbox']
+            if line['dir'][0] < .9 or top > page.rect.height * .30:
+                continue
+            text = ''.join(span['text'] for span in line['spans']).strip()
+            if words(text):
+                lines.append((round(top, 1), left, max(span['size'] for span in line['spans']), text))
+    if not lines:
+        return ''
+    largest = max(line[2] for line in lines)
+    prominent = sorted(line for line in lines if line[2] >= largest * .9)
+    title_lines = []
+    previous_top = prominent[0][0]
+    for top, _, _, text in prominent:
+        if top - previous_top > largest * 1.7:
+            break
+        title_lines.append(text)
+        previous_top = top
+    title = re.sub(r'(?<=\w)-\n(?=\w)', '', '\n'.join(title_lines))
+    return ' '.join(title.split())[:240] if len(words(title)) >= 3 else ''
+
+
+def refresh_arxiv_titles():
+    """Upgrade older first-line titles without rebuilding the index or overwriting PDF metadata."""
+    with connect() as con:
+        rows = con.execute("""SELECT d.id, d.title, p.text FROM documents d
+                            JOIN pages p ON p.document_id=d.id AND p.page=1
+                            WHERE d.arxiv_id IS NOT NULL AND d.status IN ('ready','partial')""").fetchall()
+    for row in rows:
+        first_line = next((line.strip() for line in row['text'].splitlines() if line.strip()), '')
+        if row['title'] != first_line:
+            continue
+        try:
+            with pymupdf.open(UPLOADS / f"{row['id']}.pdf") as pdf:
+                title = '' if (pdf.metadata or {}).get('title', '').strip() else arxiv_page_title(pdf[0])
+            if title and title != row['title']:
+                with connect() as con:
+                    con.execute('UPDATE documents SET title=? WHERE id=? AND title=?',
+                                (title, row['id'], row['title']))
+        except (RuntimeError, ValueError, OSError):
+            log.warning('Could not refresh title for %s', row['id'])
+
+
 def parse_document(doc_id: str):
     try:
         with connect() as con:
@@ -119,9 +166,11 @@ def parse_document(doc_id: str):
                         match = re.search(r'arXiv:\s*(\d{4}\.\d{4,5})v(\d+)', text, re.I)
                         # Use PDF metadata / text, never the uploaded filename, for version hints.
                         title = (pdf.metadata or {}).get('title', '').strip()
+                        if not title and (row['arxiv_id'] or match):
+                            title = arxiv_page_title(page)
                         if not title:
                             lines = [line.strip() for line in text.splitlines() if line.strip()]
-                            title = next((line for line in lines if 'Attention Is All You Need' in line), lines[0] if lines else row['filename'])
+                            title = lines[0] if lines else row['filename']
                         con.execute('''UPDATE documents SET
                                       title=CASE WHEN arxiv_id IS NOT NULL AND title!=filename THEN title ELSE ? END,
                                       arxiv_id=COALESCE(arxiv_id,?), version=COALESCE(version,?) WHERE id=?''',

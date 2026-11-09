@@ -16,6 +16,22 @@ from .retrieval import retrieve
 
 log = logging.getLogger(__name__)
 
+TRAINING_HARDWARE = re.compile(
+    r'(?:^|(?<=\.)\d{0,3}\s+)(?P<statement>(?:We\s+(?:pre[- ]?)?trained\b|(?:Pre[- ]?)?Training\s+of\b)'
+    r'[^.!?]{0,125}?\b(?:on|with)\s+(?:one\s+machine\s+with\s+)?'
+    r'\d[\d,]*\s+(?:[\w-]+\s+){0,3}?(?:GPUs?|TPUs?)\b'
+    r'(?:[^.!?]{0,65}?\(\d[\d,]*\s+TPU\s+chips?\s+total\))?)',
+    re.I,
+)
+
+
+def hardware_excerpt(text):
+    # Retain the training scope and unit of each count, including separate chip totals.
+    matches = list(TRAINING_HARDWARE.finditer(text))
+    if matches and matches[-1].end() - matches[0].start('statement') <= 480:
+        return text[matches[0].start('statement'):matches[-1].end()]
+    return matches[0].group('statement') if matches else None
+
 
 def local_paper(target: str):
     identifier = arxiv.paper_id(target)
@@ -52,15 +68,22 @@ def event(task_id, tool, message):
 
 def match_evidence(query, doc_id, field_key):
     prose_field = field_key in ('objective', 'data')
+    candidate = None
     for source in retrieve(query, [doc_id], limit=8):
         text = source['text'].strip()
+        if field_key == 'hardware':
+            quote = hardware_excerpt(text)
+            if quote:
+                return source, quote, 'verified_excerpt'
         if prose_field and (len(words(text)) < 24 or re.match(r'^(?:table|figure)\s+\d+\s*:', text, re.I)):
             continue
         match = re.search(FIELDS[field_key].cue, source['text'], re.I)
-        if match:
+        if match and candidate is None:
             start = max(0, match.start() - 140)
-            return source, source['text'][start:start+480].strip()
-    return None
+            candidate = source, source['text'][start:start+480].strip(), 'candidate'
+            if field_key != 'hardware':
+                break
+    return candidate
 
 
 def find_cells(task_id, papers, fields, queries):
@@ -74,29 +97,32 @@ def find_cells(task_id, papers, fields, queries):
             retry = field.query if query != field.query else field.retry
             cell = {'document_id': paper['id'], 'status': 'missing', 'searched_queries': [query]}
             matched = match_evidence(query, paper['id'], key)
-            if matched is None:
-                event(task_id, 'retry_evidence', f'{paper["filename"]} 的「{field.label}」首轮未命中，换关键词补查。')
+            if matched is None or (key == 'hardware' and matched[2] == 'candidate'):
+                reason = '首轮只找到硬件提及，补查训练设备数量。' if matched else '首轮未命中，换关键词补查。'
+                event(task_id, 'retry_evidence', f'{paper["filename"]} 的「{field.label}」{reason}')
                 cell['searched_queries'].append(retry)
-                matched = match_evidence(retry, paper['id'], key)
+                alternative = match_evidence(retry, paper['id'], key)
+                if matched is None or (alternative and alternative[2] == 'verified_excerpt'):
+                    matched = alternative
             if matched:
-                source, quote = matched
-                cell.update(status='candidate', source_id=source['id'], quote=quote)
+                source, quote, status = matched
+                cell.update(status=status, source_id=source['id'], quote=quote)
                 evidence[source['id']] = source
             cells.append(cell)
-        event(task_id, 'search_evidence', f'{field.label}：{sum(c["status"] == "candidate" for c in cells)}/{len(cells)} 篇返回相关原文。')
+        event(task_id, 'search_evidence', f'{field.label}：{sum(c["status"] != "missing" for c in cells)}/{len(cells)} 篇返回相关原文。')
         rows.append({'key': key, 'label': field.label, 'cells': cells})
     return rows, list(evidence.values())
 
 
 def summarize_cells(task_id, question, rows):
-    candidates = {(row['key'], cell['document_id']): cell for row in rows for cell in row['cells']
-                  if cell['status'] == 'candidate'}
+    candidates = {(row['key'], cell['document_id']): cell for row in rows if row['key'] != 'hardware'
+                  for cell in row['cells'] if cell['status'] == 'candidate'}
     if not candidates:
         return 0
     if os.getenv('RF_MODEL_PROFILE') == 'compact':
         accepted = 0
         for (key, _), cell in candidates.items():
-            prompt = 'What GPUs or TPUs were used?' if key == 'hardware' else f'What does the passage report about {FIELDS[key].query}?'
+            prompt = f'What does the passage report about {FIELDS[key].query}?'
             raw, _ = agent.chat_completion(
                 'Copy an exact short substring from the input that answers the question. '
                 'Output only the original substring, no quotation marks.',
@@ -187,8 +213,8 @@ def execute(task_id: str, target: str):
             except Exception:
                 log.exception('Comparison model summary failed')
                 warnings.append('模型摘要暂不可用，已保留原文候选。')
-        if summaries == 0:
-            warnings.append('表格展示各字段的原文候选，供人工核对。')
+        if summaries == 0 and any(cell['status'] == 'candidate' for row in rows for cell in row['cells']):
+            warnings.append('部分字段仅找到原文候选，请回到原页核对。')
         columns = [{'id': paper['id'], 'title': paper['title'], 'filename': paper['filename']} for paper in papers]
         result = {'mode': 'model_assisted' if summaries else 'evidence_only', 'claims': [], 'evidence': evidence,
                   'warnings': warnings, 'comparison': {'papers': columns, 'rows': rows}}

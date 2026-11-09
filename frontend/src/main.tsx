@@ -6,7 +6,7 @@ import './style.css';
 
 type Paper = {id: string; title: string; filename: string; status: string; page_count: number; processed_pages: number; text_pages: number; file_url: string; error?: string; version?: number};
 type Evidence = {id: string; document_id: string; title: string; filename: string; page: number; text: string; bbox: number[]; score: number; file_url: string; source?: 'native' | 'ocr'};
-type ComparisonCell = {document_id: string; status: 'missing' | 'candidate' | 'cited_summary'; source_id?: string; quote?: string; text?: string; searched_queries?: string[]};
+type ComparisonCell = {document_id: string; status: 'missing' | 'candidate' | 'cited_summary' | 'verified_excerpt'; source_id?: string; quote?: string; text?: string; searched_queries?: string[]};
 type Comparison = {papers: {id: string; title: string; filename: string}[]; rows: {key: string; label: string; cells: ComparisonCell[]}[]};
 type Task = {id: string; question: string; document_ids: string[]; status: string; events: {step: string; message: string; tool: string; time: string}[]; result: null | {mode: string; claims: {text: string; source_id: string; quote: string}[]; evidence: Evidence[]; warnings: string[]; comparison?: Comparison}};
 type Health = {model_mode: string; model_name?: string; version: string; ocr_available: boolean};
@@ -52,7 +52,9 @@ function ComparisonTable({table, evidence, openPaper}: {table: Comparison; evide
             return <td key={cell.document_id}>
               {cell.status === 'missing' ? <span className="result-note">未检得匹配片段</span> : <>
                 {cell.text && <p>{cell.text}</p>}
-                <details><summary>{source?.source === 'ocr' ? 'OCR 识别片段' : '原文片段'}</summary><p>{cell.quote}</p></details>
+                {cell.status === 'verified_excerpt'
+                  ? <><p>{cell.quote}</p>{source?.source === 'ocr' && <small className="result-note">OCR 识别片段</small>}</>
+                  : <details><summary>{source?.source === 'ocr' ? 'OCR 识别片段' : '原文片段'}</summary><p>{cell.quote}</p></details>}
                 {source && <button className="source-jump" onClick={() => openPaper(source.document_id, source.page)}>第 {source.page} 页 ↗</button>}
               </>}
               {(cell.searched_queries?.length ?? 0) > 1 && <details>
@@ -237,7 +239,11 @@ function App() {
                 : '仍有页面需要OCR。运行 setup-ocr.ps1 准备本地英文识别数据。'}
             </div>}
             {readerMode === 'text' && pageFromOcr && <div className="reader-note">本页文本来自 OCR，关键数字请对照 PDF 核实。</div>}
-            {readerMode === 'pdf' ? <iframe key={`${current}:${page}`} src={`${paper.file_url}#page=${page}&view=FitH`} title={`${paper.filename} 第${page}页`}/> : <pre className="page-text">{pageText || '正在读取本页…'}</pre>}
+            {readerMode === 'pdf' ? <div className="reader-preview" key={`${current}:${page}`}>
+              {['ready', 'partial', 'needs_ocr'].includes(paper.status)
+                ? <img src={`/api/read/${paper.id}/pages/${page}/image`} alt={`${paper.filename} 第 ${page} 页`}/>
+                : <p className="reader-note">{paper.status === 'failed' ? '预览不可用，可在新窗口打开 PDF。' : '解析完成后显示页面预览。'}</p>}
+            </div> : <pre className="page-text">{pageText || '正在读取本页…'}</pre>}
           </> : <div className="empty reader-empty"><div className="page-illustration"><span/><span/><span/><span/><span/></div><h3>原文始终在手边</h3><p>打开一篇文献，或点击检索结果中的出处。<br/>每条证据都保留论文、页码和原文片段。</p></div>}
         </section>
         <section className="panel agent"><div className="panel-heading"><div><h2>研究任务</h2><p>限定证据范围，让结果可核查</p></div><span className="tiny-mark">RF</span></div>

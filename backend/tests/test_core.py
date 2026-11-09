@@ -15,7 +15,9 @@ os.environ['RF_MODEL_MODE'] = 'disabled'
 
 import pymupdf
 from fastapi.testclient import TestClient
-from app.comparison import summarize_cells
+from app.comparison import hardware_excerpt, summarize_cells
+from app.documents import arxiv_page_title
+from app.library_tools import reference_title_span
 from app.main import app
 
 
@@ -123,15 +125,15 @@ class CoreTests(unittest.TestCase):
 
     def test_comparison_rejects_a_quote_from_the_other_paper(self):
         left = {'document_id': 'left', 'status': 'candidate', 'source_id': 'left-block',
-                'quote': 'Training used eight NVIDIA P100 GPUs.'}
+                'quote': 'Training took 80,000 steps.'}
         right = {'document_id': 'right', 'status': 'candidate', 'source_id': 'right-block',
-                 'quote': 'Training used four Cloud TPUs.'}
-        rows = [{'key': 'hardware', 'cells': [left, right]}]
+                 'quote': 'Training took 100,000 steps.'}
+        rows = [{'key': 'schedule', 'cells': [left, right]}]
         response = {'cells': [
-            {'field': 'hardware', 'document_id': 'left', 'source_id': 'right-block',
-             'quote': right['quote'], 'text': 'Used four TPUs.'},
-            {'field': 'hardware', 'document_id': 'right', 'source_id': 'right-block',
-             'quote': right['quote'], 'text': 'Used four TPUs.'},
+            {'field': 'schedule', 'document_id': 'left', 'source_id': 'right-block',
+             'quote': right['quote'], 'text': '100,000 steps.'},
+            {'field': 'schedule', 'document_id': 'right', 'source_id': 'right-block',
+             'quote': right['quote'], 'text': '100,000 steps.'},
         ]}
         with patch('app.agent.call_model', return_value=response):
             self.assertEqual(summarize_cells('test', 'Compare the hardware', rows), 1)
@@ -140,11 +142,32 @@ class CoreTests(unittest.TestCase):
 
     def test_compact_extractor_rejects_altered_number(self):
         cell = {'document_id': 'left', 'status': 'candidate', 'source_id': 'left-block',
-                'quote': 'Training used eight NVIDIA P100 GPUs.'}
-        rows = [{'key': 'hardware', 'cells': [cell]}]
-        with patch.dict(os.environ, {'RF_MODEL_PROFILE': 'compact'}), patch('app.agent.chat_completion', return_value=('90 NVIDIA P100 GPUs', 'stop')):
-            self.assertEqual(summarize_cells('test', 'Compare the hardware', rows), 0)
+                'quote': 'Training used 80,000 steps.'}
+        rows = [{'key': 'schedule', 'cells': [cell]}]
+        with patch.dict(os.environ, {'RF_MODEL_PROFILE': 'compact'}), patch('app.agent.chat_completion', return_value=('90,000 steps', 'stop')):
+            self.assertEqual(summarize_cells('test', 'Compare training steps', rows), 0)
         self.assertEqual(cell['status'], 'candidate')
+
+    def test_hardware_excerpt_keeps_each_experiment_and_unit(self):
+        text = ('Training of ModelSmall was performed on 4\nCloud TPUs in Pod mode (16 TPU chips total).3 '
+                'Training of ModelLarge was performed on 16 Cloud TPUs (64 TPU chips total). '
+                'Fine-tuning took an hour on 1 Cloud TPU.')
+        self.assertEqual(hardware_excerpt(text), text[:text.index('. Fine-tuning')])
+        self.assertIsNone(hardware_excerpt('Fine-tuning was performed on 1 Cloud TPU.'))
+
+    def test_arxiv_title_excludes_venue_and_preserves_wrapped_title(self):
+        with pymupdf.open() as pdf:
+            page = pdf.new_page()
+            page.insert_text((70, 35), 'Published as a conference paper at ICLR 2020', fontsize=10)
+            page.insert_text((70, 90), 'Learning from a Large', fontsize=17)
+            page.insert_text((70, 110), 'Collection of Papers', fontsize=17)
+            page.insert_text((70, 133), 'Author Name', fontsize=14)
+            self.assertEqual(arxiv_page_title(page), 'Learning from a Large Collection of Papers')
+
+    def test_reference_span_preserves_wrapped_title_and_ligature(self):
+        original = 'Earlier reference. Reformer: The Eﬃ-\ncient Transformer. Following reference.'
+        start, end = reference_title_span(original, 'reformer the efficient transformer')
+        self.assertEqual(original[start:end], 'Reformer: The Eﬃ-\ncient Transformer')
 
 
 if __name__ == '__main__':

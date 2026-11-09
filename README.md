@@ -16,17 +16,18 @@ ResearchFlow 是面向传智杯「AI大模型创新应用挑战赛」的全流�
 - 用参考文献原文生成局域引用图谱、PageRank、综述线索和后续研究线索。
 - 按研究构想生成带引用的提纲和 Mermaid 图。CSV 支持数据表、柱状图、折线图、三维雷达图、图注和 Matplotlib 脚本。
 
-默认没有模型调用，只显示原文候选，不生成回答。候选不等于答案；精确引句校验也不能保证结论蕴含关系正确，仍需人工核对。
+默认关闭模型调用。训练硬件支持从原文提取明确写出的设备数量及适用范围；其余证据按字段展示，需按原页核对。
 
 ## 启动（Windows）
 
 要求 Windows x64、Python 3.12、Node.js 和 npm。在项目目录打开 PowerShell：
 
 ```powershell
+Set-Location -LiteralPath 'C:\Users\DELL\Documents\Codex\2026-11-09\wo\outputs\ResearchFlow'
 powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1 -LocalModel
 ```
 
-浏览器打开 <http://127.0.0.1:8000>，接口文档在 <http://127.0.0.1:8000/docs>。单服务提供前端和 API。`-LocalModel` 使用通过校验的 llama.cpp 与 Qwen2.5-0.5B。当前机器已缓存，换电脑首次需下载约 423 MB。运行在 CPU，使用本地算力。单独运行 `start.ps1` 时按 `.env` 配置模型，默认保留证据检索模式。原前后端启动脚本仍供开发使用。
+浏览器打开 <http://127.0.0.1:8000>，接口文档在 <http://127.0.0.1:8000/docs>。终端保持打开，按 Ctrl+C 停止。换电脑时，把第一行路径改成解压后的项目目录。首次启动按锁文件安装前后端依赖。`-LocalModel` 使用通过校验的 llama.cpp 与 Qwen2.5-0.5B。当前机器已缓存，换电脑首次需联网下载约 423 MB。运行在 CPU，无需 API 密钥。省略 `-LocalModel` 时按 `.env` 配置模型，默认使用证据检索模式。
 
 换电脑时，运行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\setup-ocr.ps1` 下载约 4 MB 英文识别数据。本机已准备好。使用自定义数据目录时，可用 `RF_TESSDATA_DIR` 指向包含 `eng.traineddata` 的目录。
 
@@ -41,7 +42,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1 -LocalModel
 5. 上传541页教材，观察逐页进度，解析后跳转第541页或搜索关键词。
 6. 只勾选 Transformer，展开「补齐论文并对比」，点「填入 BERT 示例」再运行。首次执行会连接 arXiv。表格中展开原文片段，点击页码打开联动阅读，最后下载研究报告。
 
-对比任务按用户问题选择支持的字段。启用本地模型后，模型生成检索词并从候选中摘录原句。未通过原文核对的内容保留为候选。小模型适合流程验收，术语、复杂推理与长文翻译需要人工复核。每次 PDF 翻译最多 60 页。
+对比任务按用户问题选择支持的字段。启用本地模型后，模型生成检索词，并尝试从候选中摘录原句。硬件优先显示含设备数量和训练范围的原句，证据不足时保留候选。小模型适合流程验收，术语、复杂推理与长文翻译需要人工复核。每次 PDF 翻译最多 60 页。
 
 原始数据目录：`C:\Users\DELL\Doubao\chats\2026-11-09\new-chat\pdf`。
 这是公开替代数据集；自行生成的扫描件不能代表官方扫描件难度。不从配套 `.md` 文件导入答案。
@@ -66,19 +67,28 @@ RF_MODEL_API_KEY=
 ```text
 backend/app/       配置、SQLite、PDF解析、检索、任务执行、HTTP API
 backend/tests/     隔离数据的回归测试
+backend/review_smoke.py  用真实PDF走查运行中的工作台
 frontend/src/      React工作台
 docs/              模块计划、接口约定、豆包任务书、验收报告
 data/              上传文件和SQLite（自动生成，不提交）
+.cache/local-model/ 本机的推理程序和模型权重（自动下载，不提交）
+samples/           绘图用CSV样例
 ```
+
+服务运行后，在另一个 PowerShell 进入项目目录，运行真实 PDF 验收。它会向当前服务的文献库导入样例并保存对比任务。
+
+```powershell
+.\.venv\Scripts\python.exe .\backend\review_smoke.py 'C:\Users\DELL\Doubao\chats\2026-11-09\new-chat\pdf\1706.03762v7.pdf'
+```
+
+只跑离线回归和前端编译时，使用下列命令。
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s backend/tests -v
-cd frontend
-npm.cmd run build
+npm.cmd --prefix frontend run build
 ```
 
-后端精确依赖在 `backend/requirements-lock.txt`；前端精确依赖在 `frontend/package-lock.json`。
-首次安装使用范围依赖，复现当前环境时后端使用 `pip install -r backend/requirements-lock.txt`，前端使用 `npm ci`。
+后端精确依赖在 `backend/requirements-lock.txt`，前端精确依赖在 `frontend/package-lock.json`。本机实测结果见 [验收报告](docs/验收报告.md)。
 
 ## 参赛与开源说明
 

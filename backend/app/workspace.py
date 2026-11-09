@@ -282,7 +282,10 @@ def comparison_report(task, base_url):
                 if cell.get('text'):
                     lines.append(f"  - 模型摘要：{cell['text']}")
                 quote = ' '.join(cell['quote'].splitlines())
-                lines.append(f"  - 原文候选：{quote} [第 {source['page']} 页]({base_url}{source['file_url']})")
+                label = '训练设定原文' if cell['status'] == 'verified_excerpt' else '原文片段'
+                if source.get('source') == 'ocr':
+                    label = 'OCR 识别片段'
+                lines.append(f"  - {label}：{quote} [第 {source['page']} 页]({base_url}{source['file_url']})")
             if cell.get('searched_queries'):
                 lines.append('  - 检索词：' + '；'.join(cell['searched_queries']))
     rows = []
