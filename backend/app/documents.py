@@ -2,11 +2,12 @@
 import hashlib
 import json
 import logging
+import math
 import re
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 import pymupdf
-from .config import UPLOADS
+from .config import TESSDATA, UPLOADS
 from .db import connect
 
 log = logging.getLogger(__name__)
@@ -24,6 +25,31 @@ def fingerprint(text: str) -> set[int]:
             for i in range(max(0, len(tokens) - 3))}
 
 
+def ocr_available():
+    return (TESSDATA / 'eng.traineddata').is_file()
+
+
+def extract_blocks(page, use_ocr):
+    blocks = [block for block in page.get_text('blocks', sort=True) if block[6] == 0]
+    text = '\n'.join(block[4] for block in blocks)
+    needs_ocr = len(text.strip()) < 20 and bool(page.get_image_info())
+    if needs_ocr and use_ocr:
+        # Keep the raster under four megapixels, including unusually large PDF pages.
+        area = max(page.rect.width * page.rect.height, 1)
+        dpi = min(150, int(72 * math.sqrt(4_000_000 / area)))
+        if dpi >= 36:
+            try:
+                textpage = page.get_textpage_ocr(language='eng', dpi=dpi, full=True, tessdata=str(TESSDATA))
+                recognized = page.get_text('blocks', textpage=textpage, sort=True)
+                recognized = [block for block in recognized if block[6] == 0]
+                recognized_text = '\n'.join(block[4] for block in recognized)
+                if len(recognized_text.strip()) >= 20:
+                    return recognized, recognized_text, 'ocr', False
+            except RuntimeError:
+                log.warning('OCR failed on PDF page %s', page.number + 1, exc_info=True)
+    return blocks, text, 'native', needs_ocr
+
+
 def parse_document(doc_id: str):
     try:
         with connect() as con:
@@ -36,6 +62,7 @@ def parse_document(doc_id: str):
         signature = set()
         text_pages = 0
         ocr_pages = 0
+        use_ocr = ocr_available()
         with pymupdf.open(UPLOADS / f'{doc_id}.pdf') as pdf:
             if pdf.needs_pass:
                 raise ValueError('加密PDF暂不支持，请先解密后上传。')
@@ -46,20 +73,19 @@ def parse_document(doc_id: str):
                 con.execute('UPDATE documents SET page_count=? WHERE id=?', (count, doc_id))
             for index in range(count):
                 page = pdf[index]
-                blocks = page.get_text('blocks', sort=True)
-                text = '\n'.join(b[4] for b in blocks if b[6] == 0)
-                has_text = len(text.strip()) >= 20
-                text_pages += int(has_text)
-                ocr_pages += int(not has_text and bool(page.get_images()))
+                blocks, text, source, needs_ocr = extract_blocks(page, use_ocr)
+                text_pages += int(len(text.strip()) >= 20)
+                ocr_pages += int(needs_ocr)
                 # Keep at most 4096 bottom hashes, rather than holding an entire book in memory.
                 signature.update(fingerprint(text))
                 signature = set(sorted(signature)[:4096])
                 with connect() as con:
                     if not con.execute('SELECT 1 FROM documents WHERE id=?', (doc_id,)).fetchone():
                         return
-                    con.execute('INSERT INTO pages VALUES (?,?,?,?,?)', (doc_id, index+1, text, page.rect.width, page.rect.height))
+                    con.execute('INSERT INTO pages(document_id,page,text,width,height,source) VALUES (?,?,?,?,?,?)',
+                                (doc_id, index+1, text, page.rect.width, page.rect.height, source))
                     for b_index, block in enumerate(blocks):
-                        if block[6] != 0 or not block[4].strip():
+                        if not block[4].strip():
                             continue
                         # Bound context length. Each split retains the original source block box.
                         for start in range(0, len(block[4]), 1100):

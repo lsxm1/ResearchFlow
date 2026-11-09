@@ -44,7 +44,7 @@ def health():
     cfg = model_config()
     configured = cfg['mode'] == 'openai_compatible' and bool(cfg['model'] and cfg['base_url'])
     return {'status': 'ok', 'version': '0.1.0', 'model_mode': 'configured' if configured else 'evidence_only',
-            'model_name': cfg['model'] if configured else None, 'ocr_available': False}
+            'model_name': cfg['model'] if configured else None, 'ocr_available': documents.ocr_available()}
 
 
 @app.get('/api/documents')
@@ -106,6 +106,24 @@ def pdf_file(doc_id: str):
     if not path.is_file():
         raise HTTPException(404, '原始PDF文件缺失。')
     return FileResponse(path, media_type='application/pdf', filename='paper.pdf', content_disposition_type='inline')
+
+
+@app.post('/api/documents/{doc_id}/retry-ocr', status_code=202)
+def retry_ocr(doc_id: str):
+    get_document(doc_id)
+    if not documents.ocr_available():
+        raise HTTPException(409, '请先运行 setup-ocr.ps1 准备英文OCR数据。')
+    if not (UPLOADS / f'{doc_id}.pdf').is_file():
+        raise HTTPException(404, '原始PDF文件缺失。')
+    with connect() as con:
+        changed = con.execute(
+            "UPDATE documents SET status='queued', error=NULL WHERE id=? AND status IN ('needs_ocr','partial')",
+            (doc_id,),
+        ).rowcount
+    if not changed:
+        raise HTTPException(409, '只有仍有页面需要OCR的文献可以重新识别。')
+    documents.PDF_POOL.submit(documents.parse_document, doc_id)
+    return {'status': 'queued'}
 
 
 @app.get('/api/documents/{doc_id}/pages/{page}')

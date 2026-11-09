@@ -5,6 +5,7 @@
 | 组件 | 来源 | 上游许可证 | 当前用途 |
 |---|---|---|---|
 | PyMuPDF | https://github.com/pymupdf/PyMuPDF | AGPL-3.0 / 商业双授权 | PDF文本块、坐标、文档元信息 |
+| Tesseract 英文识别数据 | https://github.com/tesseract-ocr/tessdata_fast/tree/4.1.0 | Apache-2.0 | PyMuPDF 内置引擎使用的本地识别数据 |
 | FastAPI | https://github.com/fastapi/fastapi | MIT | HTTP API、类型校验、接口文档 |
 | Uvicorn | https://github.com/Kludex/uvicorn | BSD-3-Clause | ASGI服务器 |
 | HTTPX | https://github.com/encode/httpx | BSD-3-Clause | 可配置模型接口调用 |

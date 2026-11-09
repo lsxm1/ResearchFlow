@@ -12,9 +12,9 @@ ALIASES = {
     '注意力': 'attention', '模型': 'model', '结构': 'architecture',
     '批次': 'batch', '优化器': 'optimizer adam', '学习率': 'learning rate',
     '翻译': 'translation bleu', '数据集': 'dataset data', '编码器': 'encoder',
-    'hardware': 'gpu machine device', '硬件环境': 'gpu machine device',
+    'hardware': 'gpu nvidia processor accelerator', '硬件环境': 'gpu processor accelerator',
 }
-STOP = set('the a an is are was were of to and in for with on how what does do it this that'.split())
+STOP = set('the a an is are was were of to and in for with on how what does do it this that used using use'.split())
 FORMS = {'trained': 'train', 'training': 'train', 'trains': 'train', 'models': 'model',
          'gpus': 'gpu', 'parameters': 'parameter', 'hyperparameters': 'hyperparameter'}
 
@@ -33,7 +33,8 @@ def retrieve(question: str, document_ids: list[str], limit: int = 6):
     df = Counter()
     total = lengths = 0
     with connect() as con:
-        sql = f'''SELECT c.*, d.title, d.filename FROM chunks c JOIN documents d ON d.id=c.document_id
+        sql = f'''SELECT c.*, d.title, d.filename, p.source FROM chunks c JOIN documents d ON d.id=c.document_id
+                  JOIN pages p ON p.document_id=c.document_id AND p.page=c.page
                   WHERE c.document_id IN ({placeholders})'''
         for row in con.execute(sql, document_ids):
             tokens = terms(row['text'])
@@ -69,7 +70,7 @@ def retrieve(question: str, document_ids: list[str], limit: int = 6):
             continue
         results.append({'id': row['id'], 'document_id': row['document_id'], 'title': row['title'],
                         'filename': row['filename'], 'page': row['page'], 'text': row['text'],
-                        'bbox': json.loads(row['bbox']), 'score': round(score, 3),
+                        'bbox': json.loads(row['bbox']), 'score': round(score, 3), 'source': row['source'],
                         'file_url': f"/api/documents/{row['document_id']}/file#page={row['page']}"})
         if len(results) >= limit:
             break

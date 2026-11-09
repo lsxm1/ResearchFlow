@@ -34,6 +34,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS pages (
             document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
             page INTEGER NOT NULL, text TEXT NOT NULL, width REAL NOT NULL, height REAL NOT NULL,
+            source TEXT NOT NULL DEFAULT 'native',
             PRIMARY KEY(document_id, page)
         );
         CREATE TABLE IF NOT EXISTS chunks (
@@ -47,6 +48,10 @@ def init_db():
             result TEXT, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
         );
         ''')
+        con.execute('BEGIN IMMEDIATE')
+        columns = {column['name'] for column in con.execute('PRAGMA table_info(pages)')}
+        if 'source' not in columns:
+            con.execute("ALTER TABLE pages ADD COLUMN source TEXT NOT NULL DEFAULT 'native'")
 
 
 def document(row):

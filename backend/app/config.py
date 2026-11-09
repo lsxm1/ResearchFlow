@@ -12,6 +12,9 @@ DATA.mkdir(parents=True, exist_ok=True)
 UPLOADS = DATA / 'uploads'
 UPLOADS.mkdir(exist_ok=True)
 DB = DATA / 'researchflow.sqlite3'
+TESSDATA = Path(os.getenv('RF_TESSDATA_DIR') or os.getenv('TESSDATA_PREFIX') or DATA / 'tessdata')
+if not TESSDATA.is_absolute():
+    TESSDATA = ROOT / TESSDATA
 MAX_UPLOAD = int(os.getenv('RF_MAX_UPLOAD_MB', '50')) * 1024 * 1024
 
 

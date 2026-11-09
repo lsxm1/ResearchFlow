@@ -3,9 +3,9 @@ import { createRoot } from 'react-dom/client';
 import './style.css';
 
 type Paper = {id: string; title: string; filename: string; status: string; page_count: number; processed_pages: number; text_pages: number; file_url: string; error?: string; version?: number};
-type Evidence = {id: string; document_id: string; title: string; filename: string; page: number; text: string; bbox: number[]; score: number; file_url: string};
-type Task = {id: string; question: string; status: string; events: {step: string; message: string; tool: string; time: string}[]; result: null | {mode: string; claims: {text: string; source_id: string; quote: string}[]; evidence: Evidence[]; warnings: string[]}};
-type Health = {model_mode: string; model_name?: string; version: string};
+type Evidence = {id: string; document_id: string; title: string; filename: string; page: number; text: string; bbox: number[]; score: number; file_url: string; source?: 'native' | 'ocr'};
+type Task = {id: string; question: string; document_ids: string[]; status: string; events: {step: string; message: string; tool: string; time: string}[]; result: null | {mode: string; claims: {text: string; source_id: string; quote: string}[]; evidence: Evidence[]; warnings: string[]}};
+type Health = {model_mode: string; model_name?: string; version: string; ocr_available: boolean};
 type Duplicate = {document_id: string; title: string; similarity: number; recommendation: string};
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
@@ -19,13 +19,25 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
 
 const statuses: Record<string, string> = {queued: '等待解析', parsing: '解析中', ready: '可检索', partial: '部分页面需OCR', needs_ocr: '需要OCR', failed: '失败'};
 const roadmap = [
-  ['01', '文献入库与解析', '已实现基础版', '批量上传、逐页进度、扫描件识别、正文相似提醒。OCR与公式还原待接入。'],
-  ['02', '证据问答与对比', '已实现基础版', 'BM25检索、页码与原文块；可配置模型适配器。语义检索与对比表待完成。'],
+  ['01', '文献入库与解析', '已实现基础版', '批量上传、逐页进度、英文扫描件OCR、正文相似提醒。'],
+  ['02', '证据问答与对比', '已实现基础版', 'BM25检索、按篇证据对照、页码与原文块。'],
   ['03', '联动阅读与翻译', '待开发', '当前支持原始PDF与提取文本切换。后续增加标题导航和段落对照翻译。'],
   ['04', '论文搜索与追踪', '待开发', '按标题搜索、预览后导入、主题追踪和可解释推荐。'],
   ['05', '引用图谱与综述', '待开发', '从真实参考文献建立局域图谱、PageRank和带证据的综述。'],
   ['06', '写作与图表', '待开发', '从证据生成提纲和参考文献；CSV生成图表、脚本和图注。'],
 ];
+
+function EvidenceCards({sources, openPaper}: {sources: Evidence[]; openPaper: (id: string, page: number) => void}) {
+  return <>{sources.map((source, index) => <article className="evidence" key={source.id}>
+    <div className="evidence-head">
+      <span className="source-number">{String(index + 1).padStart(2, '0')}</span>
+      <button onClick={() => openPaper(source.document_id, source.page)}>第 {source.page} 页 ↗</button>
+    </div>
+    <strong>{source.title}</strong>
+    <p>{source.text}</p>
+    <small>BM25 {source.score.toFixed(2)} · {source.source === 'ocr' ? 'OCR 识别片段' : '原文块已定位'}</small>
+  </article>)}</>;
+}
 
 function App() {
   const [papers, setPapers] = useState<Paper[]>([]);
@@ -44,6 +56,7 @@ function App() {
   const [view, setView] = useState<'workspace' | 'roadmap'>('workspace');
   const [readerMode, setReaderMode] = useState<'pdf' | 'text'>('pdf');
   const [pageText, setPageText] = useState('');
+  const [pageFromOcr, setPageFromOcr] = useState(false);
   const [duplicates, setDuplicates] = useState<Duplicate[]>([]);
   const fileInput = useRef<HTMLInputElement>(null);
   const paper = papers.find(x => x.id === current);
@@ -78,11 +91,17 @@ function App() {
   useEffect(() => {
     let active = true;
     setPageText('');
+    setPageFromOcr(false);
     if (current && readerMode === 'text') {
-      api<{text: string}>(`/documents/${current}/pages/${page}`).then(p => {if (active) setPageText(p.text || '本页没有可提取文本，需要OCR或本页为空白页。');}).catch(e => {if (active) setPageText(e.message);});
+      api<{text: string; source: string}>(`/documents/${current}/pages/${page}`).then(p => {
+        if (active) {
+          setPageText(p.text || '本页没有可提取文本，需要OCR或本页为空白页。');
+          setPageFromOcr(p.source === 'ocr');
+        }
+      }).catch(e => {if (active) setPageText(e.message);});
     }
     return () => {active = false;};
-  }, [current, page, readerMode, paper?.processed_pages]);
+  }, [current, page, readerMode, paper?.processed_pages, paper?.status]);
 
   function openPaper(id: string, targetPage = 1) {
     setCurrent(id); setPage(targetPage); setPageInput(String(targetPage)); setView('workspace');
@@ -125,6 +144,14 @@ function App() {
     } catch(e) {setError((e as Error).message);}
   }
 
+  async function retryOcr(id: string) {
+    setError('');
+    try {
+      await api(`/documents/${id}/retry-ocr`, {method: 'POST'});
+      setPapers(await api<Paper[]>('/documents'));
+    } catch (e) {setError((e as Error).message);}
+  }
+
   function jump(value: number) {
     const next = Math.min(paper?.page_count || 1, Math.max(1, value || 1));
     setPage(next); setPageInput(String(next));
@@ -162,7 +189,12 @@ function App() {
           {paper ? <>
             <div className="reader-toolbar"><button onClick={() => jump(page-1)} disabled={page <= 1} aria-label="上一页">←</button><form onSubmit={e => {e.preventDefault(); jump(Number(pageInput));}}><input type="number" min="1" max={paper.page_count || 1} value={pageInput} onChange={e => setPageInput(e.target.value)} aria-label="PDF页码"/> / {paper.page_count || '…'} 页 <button type="submit">跳转</button></form><button onClick={() => jump(page+1)} disabled={page >= paper.page_count} aria-label="下一页">→</button><a href={`${paper.file_url}#page=${page}`} target="_blank" rel="noreferrer">新窗口 ↗</a></div>
             {duplicates.map(d => <div className="duplicate" key={d.document_id}><strong>发现正文相似文献 · {Math.round(d.similarity * 100)}%</strong><span>{d.recommendation}</span><button onClick={() => openPaper(d.document_id)}>查看已有文献 ↗</button></div>)}
-            {paper.status === 'needs_ocr' && <div className="reader-note">这是图像型PDF，当前未配置OCR，暂不可检索。仍可查看原始页面。</div>}
+            {['needs_ocr', 'partial'].includes(paper.status) && <div className="reader-note">
+              {health?.ocr_available
+                ? <>仍有页面需要识别。 <button onClick={() => void retryOcr(paper.id)}>重新进行 OCR ↗</button></>
+                : '仍有页面需要OCR。运行 setup-ocr.ps1 准备本地英文识别数据。'}
+            </div>}
+            {readerMode === 'text' && pageFromOcr && <div className="reader-note">本页文本来自 OCR，关键数字请对照 PDF 核实。</div>}
             {readerMode === 'pdf' ? <iframe key={`${current}:${page}`} src={`${paper.file_url}#page=${page}&view=FitH`} title={`${paper.filename} 第${page}页`}/> : <pre className="page-text">{pageText || '正在读取本页…'}</pre>}
           </> : <div className="empty reader-empty"><div className="page-illustration"><span/><span/><span/><span/><span/></div><h3>原文始终在手边</h3><p>打开一篇文献，或点击检索结果中的出处。<br/>每条证据都保留论文、页码和原文片段。</p></div>}
         </section>
@@ -174,7 +206,22 @@ function App() {
             <ol className="timeline">{task.events.map((event,i) => <li key={i}><strong>{event.tool}</strong><span>{event.message}</span></li>)}</ol>
             {task.result?.warnings.map((w,i) => <p className="warning" key={i}>{w}</p>)}
             {!!task.result?.claims.length && <><h3>有来源的结论</h3>{task.result.claims.map((claim,i) => {const source = task.result?.evidence.find(x => x.id === claim.source_id); return <article className="claim" key={i}><p>{claim.text}</p><blockquote>{claim.quote}</blockquote>{source && <button onClick={() => openPaper(source.document_id,source.page)}>原文 · 第{source.page}页 ↗</button>}</article>;})}</>}
-            {!!task.result?.evidence.length && <><div className="output-title"><h3>原文候选</h3><span>{task.result.evidence.length} 条</span></div><p className="result-note">关键词相关性排序，候选片段不等于已验证答案。</p>{task.result.evidence.map((source,i) => <article className="evidence" key={source.id}><div className="evidence-head"><span className="source-number">{String(i+1).padStart(2,'0')}</span><button onClick={() => openPaper(source.document_id,source.page)}>第 {source.page} 页 ↗</button></div><strong>{source.title}</strong><p>{source.text}</p><small>BM25 {source.score.toFixed(2)} · 原文块已定位</small></article>)}</>}
+            {task.result && task.result.mode !== 'error' && task.document_ids.length > 1 ? <>
+              <div className="output-title"><h3>多文献证据对照</h3><span>{task.document_ids.length} 篇</span></div>
+              <p className="result-note">各篇按关键词相关性排序。点击页码核对片段。</p>
+              {task.document_ids.map(id => {
+                const sources = task.result?.evidence.filter(source => source.document_id === id) ?? [];
+                const filename = papers.find(p => p.id === id)?.filename ?? sources[0]?.filename ?? '已移除文献';
+                return <section key={id}>
+                  <div className="output-title"><h3>{filename}</h3><span>{sources.length} 条</span></div>
+                  {sources.length ? <EvidenceCards sources={sources} openPaper={openPaper}/> : <p className="result-note">这篇文献未返回匹配片段。</p>}
+                </section>;
+              })}
+            </> : !!task.result?.evidence.length && <>
+              <div className="output-title"><h3>原文候选</h3><span>{task.result.evidence.length} 条</span></div>
+              <p className="result-note">关键词相关性排序。点击页码核对片段。</p>
+              <EvidenceCards sources={task.result.evidence} openPaper={openPaper}/>
+            </>}
           </> : <div className="empty small task-empty"><span>◎</span><h3>让证据先行</h3><p>在左侧勾选已解析文献，再发起任务。<br/>执行步骤与来源将保存在这里。</p></div>}</div>
         </section>
       </div>}

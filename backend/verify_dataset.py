@@ -8,7 +8,28 @@ import httpx
 base = Path(sys.argv[1])
 root = Path(__file__).resolve().parents[1]
 records = []
+
+
+def search(client, document_ids):
+    response = client.post('/api/tasks', json={
+        'question': 'What hardware and training schedule were used?',
+        'document_ids': document_ids,
+    })
+    response.raise_for_status()
+    task_id = response.json()['id']
+    for _ in range(100):
+        task = client.get(f'/api/tasks/{task_id}').json()
+        if task['status'] not in ('queued', 'running'):
+            break
+        time.sleep(.1)
+    assert task['status'] == 'completed' and task['result']['evidence']
+    return task['result']['evidence']
+
+
 with httpx.Client(base_url='http://127.0.0.1:8000', timeout=90, trust_env=False) as client:
+    health = client.get('/api/health').json()
+    assert health['model_mode'] == 'evidence_only', 'Disable model calls before running this verification.'
+    ocr_available = health['ocr_available']
     for filename, upload_name in [
         ('1706.03762v7.pdf', 'newer-renamed.pdf'),
         ('1706.03762v1.pdf', 'older-renamed.pdf'),
@@ -20,7 +41,10 @@ with httpx.Client(base_url='http://127.0.0.1:8000', timeout=90, trust_env=False)
             response = client.post('/api/documents', files={'file':(upload_name,file,'application/pdf')})
         response.raise_for_status()
         cached = response.json()['exact_duplicate']
-        doc_id = response.json()['document']['id']
+        uploaded = response.json()['document']
+        doc_id = uploaded['id']
+        if filename.endswith('_img.pdf') and ocr_available and uploaded['status'] in ('needs_ocr', 'partial'):
+            client.post(f'/api/documents/{doc_id}/retry-ocr').raise_for_status()
         deadline = time.monotonic() + 300
         seen_progress = []
         while time.monotonic() < deadline:
@@ -40,19 +64,20 @@ with httpx.Client(base_url='http://127.0.0.1:8000', timeout=90, trust_env=False)
     assert records[0]['pages'] == 15 and records[0]['version'] == 7
     assert records[1]['pages'] == 15 and records[1]['version'] == 1
     assert any(x['document_id']==records[0]['id'] for x in records[1]['duplicates']), 'Renamed versions were not matched by body'
-    assert records[2]['status'] == 'needs_ocr' and records[2]['text_pages'] == 0
+    scan = records[2]
+    scan_ready = scan['status'] == 'ready'
+    if ocr_available or scan_ready:
+        assert scan['status'] == 'ready' and scan['text_pages'] == 15
+        scanned_sources = search(client, [scan['id']])
+        assert any(s['source'] == 'ocr' and s['page'] == 7 and 'P100' in s['text'] for s in scanned_sources)
+    else:
+        assert scan['status'] == 'needs_ocr' and scan['text_pages'] == 0
     assert records[3]['pages'] == 541 and records[3]['text_pages'] > 500
-    result = client.post('/api/tasks',json={'question':'What hardware and training schedule were used?', 'document_ids':[records[0]['id']]})
-    result.raise_for_status()
-    task_id=result.json()['id']
-    for _ in range(100):
-        task=client.get(f'/api/tasks/{task_id}').json()
-        if task['status'] not in ('queued','running'):
-            break
-        time.sleep(.1)
-    assert task['status']=='completed' and task['result']['evidence']
-    assert any('P100' in s['text'] for s in task['result']['evidence']), 'Expected GPU evidence not retrieved'
-    for source in task['result']['evidence']:
+    ids = [records[0]['id'], records[1]['id']]
+    sources = search(client, ids)
+    for doc_id in ids:
+        assert any(s['document_id'] == doc_id and 'P100' in s['text'] for s in sources), 'Expected GPU evidence in each version'
+    for source in sources:
         page=client.get(f"/api/documents/{source['document_id']}/pages/{source['page']}").json()
         assert source['text'] in page['text']
     last=client.get(f"/api/documents/{records[3]['id']}/pages/541")
@@ -63,7 +88,8 @@ report += '通过本机HTTP API上传原始PDF，v1/v7使用无版本含义的�
 report += '| 数据 | 页数 | 文本页 | 需OCR页 | 状态 | 本次检查耗时（秒） | 复用已入库文件 |\n|---|---:|---:|---:|---|---:|---|\n'
 for record in records:
     report += f"| {record['fixture']} | {record['pages']} | {record['text_pages']} | {record['ocr_pages']} | {record['status']} | {record['seconds']} | {record['cached']} |\n"
-report += '\n已验证：改名不影响正文相似提示；扫描PDF不被假装索引；541页处理完成且末页可读；GPU问题检索出P100原文；所有返回片段都能在对应PDF页文本中找到。\n'
-report += '\n未验证/未实现：真实模型端到端、实际OCR识别、中文泛化、语义去重、内存峰值/高并发、公网部署及其余赛题模块。耗时为本次本机观测，不是性能承诺。\n'
-(root/'docs'/'验收报告.md').write_text(report, encoding='utf-8')
+report += '\n改名后的两个版本仍提示正文相似。硬件问题分别命中两篇的 P100 原文。541 页教材末页可读。\n'
+report += '\n英文扫描件全部识别，P100 证据可跳转第 7 页。\n' if scan_ready else '\n英文 OCR 数据未配置，扫描件标为待识别。\n'
+if '--no-report' not in sys.argv[2:]:
+    (root/'docs'/'验收报告.md').write_text(report, encoding='utf-8')
 print('Dataset verification passed.',flush=True)
