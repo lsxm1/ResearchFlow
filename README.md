@@ -78,11 +78,18 @@ data/              上传文件和SQLite（自动生成，不提交）
 samples/           绘图用CSV样例
 ```
 
-服务运行后，在另一个 PowerShell 进入项目目录，运行真实 PDF 验收。它会向当前服务的文献库导入样例并保存对比任务。
+服务运行后，在另一个 PowerShell 进入项目目录，运行真实 PDF 验收。它会向当前服务的文献库导入样例并保存对比任务。用空库验收时，可在启动服务前给当前 PowerShell 设置独立的 RF_DATA_DIR。
 
 ```powershell
 .\.venv\Scripts\python.exe .\backend\review_smoke.py 'C:\Users\DELL\Doubao\chats\2026-11-09\new-chat\pdf\1706.03762v7.pdf'
 ```
+
+准备好 Transformer v7、BERT v2 和 GPT 三篇的本地 PDF 后，可以在空库复验，无需临时下载 arXiv 论文。以下示例假定样本目录和项目目录同级。
+
+~~~powershell
+$samples = Resolve-Path '..\演示样本'
+.\.venv\Scripts\python.exe .\backend\review_smoke.py "$samples\1706.03762v7.pdf" --expect-empty --bert-fixture "$samples\1810.04805v2.pdf" --gpt-fixtures $samples
+~~~
 
 只跑离线回归和前端编译时，使用下列命令。
 

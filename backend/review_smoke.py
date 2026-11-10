@@ -8,7 +8,8 @@ from pathlib import Path
 import httpx
 
 
-def verify(client: httpx.Client, fixture: Path, empty: bool, gpt_fixtures: Path | None = None) -> None:
+def verify(client: httpx.Client, fixture: Path, empty: bool, gpt_fixtures: Path | None = None,
+           bert_fixture: Path | None = None) -> None:
     def get(path):
         return client.get(path).raise_for_status()
 
@@ -33,10 +34,17 @@ def verify(client: httpx.Client, fixture: Path, empty: bool, gpt_fixtures: Path 
     if empty:
         assert get('/api/documents').json() == [], 'Expected an empty review library.'
 
-    with fixture.open('rb') as handle:
-        uploaded = post('/api/documents', files={'file': (fixture.name, handle, 'application/pdf')})
-    base = uploaded['document']['id']
-    assert wait(f'/api/documents/{base}')['status'] in {'ready', 'partial'}
+    def import_pdf(path):
+        with path.open('rb') as handle:
+            doc = post('/api/documents', files={'file': (path.name, handle, 'application/pdf')})['document']
+        parsed = wait(f"/api/documents/{doc['id']}")
+        assert parsed['status'] in {'ready', 'partial'}, parsed
+        return parsed
+
+    base = import_pdf(fixture)['id']
+    if bert_fixture:
+        bert = import_pdf(bert_fixture)
+        assert bert['arxiv_id'] == '1810.04805', 'Use the original BERT PDF with its arXiv identifier.'
 
     def compare(question, document_ids=None):
         job = post('/api/tasks/compare', json={'question': question, 'document_ids': document_ids or [base]})
@@ -58,7 +66,10 @@ def verify(client: httpx.Client, fixture: Path, empty: bool, gpt_fixtures: Path 
         return path
 
     architecture, _, sources = compare('BERT 继承了 Transformer Encoder 的什么，又改了什么？')
-    if empty:
+    if bert_fixture:
+        assert architecture['document_ids'] == [base, bert['id']]
+        assert not any(event['tool'] == 'download_pdf' for event in architecture['events'])
+    elif empty:
         assert any(event['tool'] == 'download_pdf' for event in architecture['events']), 'Expected automatic BERT import.'
     findings = architecture['result']['comparison']['findings']
     assert [item['label'] for item in findings] == ['架构的沿袭与差异', '训练目标的差异']
@@ -116,10 +127,8 @@ def verify(client: httpx.Client, fixture: Path, empty: bool, gpt_fixtures: Path 
     if gpt_fixtures:
         ids = []
         for version in (1, 2, 3):
-            path = gpt_fixtures / f'GPT-{version}.pdf'
-            with path.open('rb') as handle:
-                doc = post('/api/documents', files={'file': (path.name, handle, 'application/pdf')})['document']
-            assert wait(f"/api/documents/{doc['id']}")['status'] == 'ready'
+            doc = import_pdf(gpt_fixtures / f'GPT-{version}.pdf')
+            assert doc['status'] == 'ready'
             ids.append(doc['id'])
         gpt_task, gpt_rows, gpt_sources = compare('比较 GPT-1、GPT-2、GPT-3 的参数量、上下文窗口和 LN 位置。', ids)
         assert gpt_task['document_ids'] == ids
@@ -162,9 +171,10 @@ if __name__ == '__main__':
     parser.add_argument('transformer_pdf', type=Path, help='Path to the original 1706.03762v7 PDF')
     parser.add_argument('--url', default='http://127.0.0.1:8000')
     parser.add_argument('--expect-empty', action='store_true')
+    parser.add_argument('--bert-fixture', type=Path, help='Optional original 1810.04805 PDF to verify without an arXiv download')
     parser.add_argument('--gpt-fixtures', type=Path, help='Optional directory with GPT-1.pdf, GPT-2.pdf and GPT-3.pdf')
     args = parser.parse_args()
     password = os.getenv('RF_REVIEW_PASSWORD')
     with httpx.Client(base_url=args.url, timeout=30, trust_env=False,
                       auth=('reviewer', password) if password else None) as http:
-        verify(http, args.transformer_pdf, args.expect_empty, args.gpt_fixtures)
+        verify(http, args.transformer_pdf, args.expect_empty, args.gpt_fixtures, args.bert_fixture)
