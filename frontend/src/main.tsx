@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { api, post } from './api';
 import { Discovery, Graph, Reading, Writing } from './ResearchTools';
@@ -128,6 +128,7 @@ function App() {
   const [page, setPage] = useState(1);
   const [pageInput, setPageInput] = useState('1');
   const [readingSource, setReadingSource] = useState<string>();
+  const [comparisonPosition, setComparisonPosition] = useState<{top: number; left: number}>();
   const [question, setQuestion] = useState('What hardware and training schedule were used?');
   const [targetPaper, setTargetPaper] = useState('');
   const [health, setHealth] = useState<Health | null>(null);
@@ -144,12 +145,22 @@ function App() {
   const [duplicates, setDuplicates] = useState<Duplicate[]>([]);
   const [changingVersion, setChangingVersion] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const taskOutput = useRef<HTMLDivElement>(null);
   const paper = papers.find(x => x.id === current);
   const task = tasks.find(x => x.id === taskId);
   const activePapers = papers.filter(item => !item.archived);
   const archivedPapers = papers.filter(item => item.archived);
   const archivedCount = archivedPapers.length;
   const activeSelection = selected.filter(id => activePapers.some(p => p.id === id && ['ready','partial'].includes(p.status)));
+
+  useLayoutEffect(() => {
+    const output = taskOutput.current;
+    if (view !== 'workspace' || !comparisonPosition || !output) return;
+    output.scrollTop = comparisonPosition.top;
+    const comparison = output.querySelector<HTMLElement>('.comparison-scroll');
+    if (comparison) comparison.scrollLeft = comparisonPosition.left;
+    setComparisonPosition(undefined);
+  }, [view, comparisonPosition]);
 
   useEffect(() => {
     let active = true;
@@ -206,8 +217,17 @@ function App() {
       setError('该文献已移除，无法打开原文。');
       return;
     }
+    setComparisonPosition({
+      top: taskOutput.current?.scrollTop ?? 0,
+      left: taskOutput.current?.querySelector('.comparison-scroll')?.scrollLeft ?? 0,
+    });
     openReading(source.document_id, source.page);
     setReadingSource(source.id);
+  }
+
+  function navigate(next: View) {
+    if (next !== view && next !== 'workspace') setComparisonPosition(undefined);
+    setView(next);
   }
 
   async function upload(files: FileList | null) {
@@ -294,7 +314,7 @@ function App() {
     <aside className="nav">
       <div className="brand"><span className="brand-symbol">R<span>·</span></span><div>ResearchFlow<small>科研证据工作台</small></div></div>
       <div className="nav-label">研究空间</div>
-      {(Object.keys(views) as View[]).map(key => <button key={key} className={view === key ? 'nav-item active' : 'nav-item'} onClick={() => setView(key)}>{views[key]}</button>)}
+      {(Object.keys(views) as View[]).map(key => <button key={key} className={view === key ? 'nav-item active' : 'nav-item'} onClick={() => navigate(key)}>{views[key]}</button>)}
       <div className="nav-bottom"><span className="version">LOCAL WORKSPACE / V0.1</span><p>从论文出发<br/>让每一次判断有据可查。</p><span className={health ? 'connection online' : 'connection'}>● {health ? '本地服务已连接' : '等待后端服务'}</span></div>
     </aside>
     <main>
@@ -303,7 +323,8 @@ function App() {
       {error && <div className="banner error" role="alert">{error}<button onClick={() => setError('')} aria-label="关闭错误提示">×</button></div>}
       {notice && <div className="banner" role="status">{notice}<button onClick={() => setNotice('')} aria-label="关闭提示">×</button></div>}
       {!health && <div className="banner error">后端尚未连接。请运行项目中的 start-backend.ps1。</div>}
-      {view === 'reading' ? <Reading papers={readable} paperId={current} page={page} open={openReading} evidenceId={readingSource}/>
+      {view === 'reading' ? <Reading papers={readable} paperId={current} page={page} open={openReading} evidenceId={readingSource}
+        returnToComparison={comparisonPosition ? () => navigate('workspace') : undefined}/>
         : view === 'discovery' ? <Discovery open={openPaper}/>
         : view === 'graph' ? <Graph ids={scopedPapers} open={openReading}/>
         : view === 'writing' ? <Writing ids={scopedPapers}/>
@@ -378,7 +399,7 @@ function App() {
             </button>
           </details>
           {tasks.length > 0 && <div className="task-history"><label htmlFor="history">任务记录</label><select id="history" value={taskId} onChange={e => setTaskId(e.target.value)}><option value="">选择已保存的任务</option>{tasks.map(t => <option key={t.id} value={t.id}>{t.question.slice(0,55)} · {t.status}</option>)}</select></div>}
-          <div className="task-output" aria-live="polite">{task ? <>
+          <div className="task-output" ref={taskOutput} aria-live="polite">{task ? <>
             <div className="output-title"><h3>执行记录</h3><span className={`state ${task.status}`}>{({queued:'排队中',running:'执行中',completed:'已完成',failed:'失败'} as Record<string,string>)[task.status]}</span></div>
             <ol className="timeline">{task.events.map((event,i) => <li key={i}><strong>{event.tool}</strong><span>{event.message}</span></li>)}</ol>
             {task.result?.warnings.map((w,i) => <p className="warning" key={i}>{w}</p>)}
