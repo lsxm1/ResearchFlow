@@ -9,11 +9,11 @@ import httpx
 
 from . import agent, arxiv
 from .compare_plan import DEFAULT_FIELDS, FIELDS, MAX_FIELDS, plan_with_model, requested_fields, target_from_question
-from .comparison_facts import FACETS, grounded_findings, identify
+from .comparison_facts import FACETS, grounded_findings, identify, named_parameter_claims
 from .config import model_config
 from .db import connect
 from .documents import words
-from .parameter_tables import find_parameter_cell
+from .parameter_tables import find_parameter_cell, owned_model_family
 from .retrieval import retrieve
 
 log = logging.getLogger(__name__)
@@ -89,6 +89,18 @@ def match_evidence(query, doc_id, field_key):
     return candidate
 
 
+def named_parameter_evidence(paper, family, query):
+    models = {}
+    for source in retrieve(query, [paper['id']], limit=24):
+        if source['source'] != 'native':
+            continue
+        for variant, measurement in named_parameter_claims(source['text'], family):
+            if variant in models and models[variant][1]['value'] != measurement['value']:
+                return None
+            models.setdefault(variant, (source, measurement))
+    return max(models.values(), key=lambda item: item[1]['value'], default=None)
+
+
 def find_facets(task_id, paper, key, model_query, evidence):
     excerpts = []
     for facet in FACETS[key]:
@@ -123,7 +135,17 @@ def find_facets(task_id, paper, key, model_query, evidence):
             evidence[source['id']] = source
             item.update(facts, status='verified_excerpt', source_id=source['id'], quote=source['text'].strip())
         if key == 'parameters':
-            table = find_parameter_cell(paper, item if item['status'] == 'verified_excerpt' else None)
+            family = owned_model_family(paper)
+            if family and item['status'] == 'missing':
+                query = f'{family} {family}base {family}large model parameters architecture contains training'
+                item['searched_queries'].append(query)
+                event(task_id, 'retry_evidence', f'{paper["filename"]} 按论文自命名的模型系列 {family} 补查正文。')
+                if named := named_parameter_evidence(paper, family, query):
+                    source, facts = named
+                    evidence[source['id']] = source
+                    item.update(facts, kind='parameter_count', label='正文核对到的最大模型参数量',
+                                status='verified_excerpt', source_id=source['id'], quote=source['text'].strip())
+            table = find_parameter_cell(paper, item if item['status'] == 'verified_excerpt' else None, family)
             if table:
                 source, facts = table
                 evidence[source['id']] = source

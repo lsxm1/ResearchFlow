@@ -113,9 +113,28 @@ def parameter_measurement(amount, unit):
             'rounding_step': int(Decimal(10) ** value.as_tuple().exponent * scale)}
 
 
-def identify(text, facet):
+def normalized_evidence(text):
     text = re.sub(r'(?<=\w)-[ \t]*\r?\n[ \t]*(?=\w)', '', text)
-    normalized = ' '.join(unicodedata.normalize('NFKC', text).split()).casefold()
+    return ' '.join(unicodedata.normalize('NFKC', text).split()).casefold()
+
+
+def named_parameter_claims(text, family):
+    name = re.escape(family.casefold())
+    model = rf'(?P<model>{name}(?:[- ]?(?:small|base|medium|large|xlarge|xxlarge))?)'
+    patterns = (
+        rf'(?<![\w-]){model}\s+(?:contains|has)\s+{PARAMETER_COUNT}\s+parameters?(?=\s*(?:[.;!?)]|and\b|$))',
+        rf'\bwe (?:begin by )?train(?:ed|ing)?\s+{model}\s+following (?:the )?[\w-]+ architecture'
+        rf'\s*\((?:[^()]{{0,100}},\s*)?{PARAMETER_COUNT}\s+parameters\s*\)',
+    )
+    normalized = normalized_evidence(text)
+    for pattern in patterns:
+        for match in re.finditer(pattern, normalized):
+            variant = re.sub(r'[- ]', '', match['model'])
+            yield variant, parameter_measurement(match['amount'], match['unit'])
+
+
+def identify(text, facet):
+    normalized = normalized_evidence(text)
     for kind, pattern in facet.patterns:
         match = re.search(pattern, normalized)
         if not match:

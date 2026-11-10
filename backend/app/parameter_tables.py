@@ -5,7 +5,7 @@ import json
 import logging
 import re
 
-from .comparison_facts import PARAMETER_SCALES, PARAMETER_UNIT
+from .comparison_facts import PARAMETER_SCALES, PARAMETER_UNIT, normalized_evidence
 from .db import connect
 from .documents import PDF_POOL
 from .library_tools import parameter_table_pages
@@ -32,12 +32,15 @@ def owned_model_family(paper):
     if not title:
         return None
     family = title[1]
-    naming = re.compile(rf'\bwe (?:call|name) our (?:approach|model|method)\s+{re.escape(family)}(?:\d{{1,2}})?(?![\w-])',
-                        re.I)
+    naming = re.compile(
+        rf'\b(?:we (?:call|name) our (?:approach|model|method)|which we call|'
+        rf'we (?:introduce|present|propose) [^.!?;]{{0,100}}\b(?:model|architecture|method) (?:called|named))'
+        rf'\s+{re.escape(family.casefold())}(?:\d{{1,2}})?(?![\w-])'
+    )
     with connect() as con:
         pages = con.execute("SELECT text FROM pages WHERE document_id=? AND source='native' AND page<=4",
                             (paper['id'],)).fetchall()
-    return family if any(naming.search(page['text']) for page in pages) else None
+    return family if any(naming.search(normalized_evidence(page['text'])) for page in pages) else None
 
 
 def model_rows(rows, family):
@@ -107,7 +110,7 @@ def table_maximum(table, prose, family=None):
     return value, cell, bbox, location, orientation
 
 
-def find_parameter_cell(paper, prose):
+def find_parameter_cell(paper, prose, family):
     pages = candidate_pages(paper['id'])
     if not pages:
         return None
@@ -118,7 +121,6 @@ def find_parameter_cell(paper, prose):
         future.cancel()
         log.warning('Parameter table parsing failed for %s', paper['id'], exc_info=True)
         return None
-    family = owned_model_family(paper)
     matches = [(page, *match) for page, tables in tables_by_page for table in tables
                if (match := table_maximum(table, prose, family))]
     if not matches:

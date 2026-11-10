@@ -249,6 +249,20 @@ class CoreTests(unittest.TestCase):
         self.assertIsNone(identify('We design two baseline models, one with 395B and 1.6T parameters.', facet))
         self.assertIsNone(identify('We design two models, one with 395B and 1.6T FLOPs per sequence.', facet))
 
+    def test_named_parameter_evidence_resolves_variants_and_withholds_conflicts(self):
+        from app.comparison import named_parameter_evidence
+
+        source = {'source': 'native', 'text': 'Other-ModelX-Large has 900M parameters. '
+                  'ModelXBASE contains 110M parameters and ModelX-Large contains 340M parameters. '
+                  'ModelX-Large has 450M parameters per layer.'}
+        paper = {'id': 'paper-x'}
+        with patch('app.comparison.retrieve', return_value=[source]):
+            _, fact = named_parameter_evidence(paper, 'ModelX', 'query')
+            self.assertEqual(fact['value'], 340_000_000)
+        conflicting = {**source, 'text': 'ModelXLARGE contains 350M parameters.'}
+        with patch('app.comparison.retrieve', return_value=[source, conflicting]):
+            self.assertIsNone(named_parameter_evidence(paper, 'ModelX', 'query'))
+
     def test_natural_hardware_question_reaches_actual_gpu_evidence(self):
         doc_id = self.upload_ready()
         result = self.client.post('/api/tasks', json={'question':'What hardware and training schedule were used?', 'document_ids':[doc_id]})
