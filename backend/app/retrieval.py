@@ -23,7 +23,7 @@ def terms(text):
     return [FORMS.get(token, token) for token in words(text)]
 
 
-def retrieve(question: str, document_ids: list[str], limit: int = 6):
+def retrieve(question: str, document_ids: list[str], limit: int = 6, *, max_page: int | None = None):
     expanded = question + ' ' + ' '.join(v for k, v in ALIASES.items() if k in question)
     query = set(terms(expanded)) - STOP
     if not query or not document_ids:
@@ -36,7 +36,11 @@ def retrieve(question: str, document_ids: list[str], limit: int = 6):
         sql = f'''SELECT c.*, d.title, d.filename, p.source FROM chunks c JOIN documents d ON d.id=c.document_id
                   JOIN pages p ON p.document_id=c.document_id AND p.page=c.page
                   WHERE c.document_id IN ({placeholders})'''
-        for row in con.execute(sql, document_ids):
+        params = list(document_ids)
+        if max_page is not None:
+            sql += ' AND c.page<=?'
+            params.append(max_page)
+        for row in con.execute(sql, params):
             tokens = terms(row['text'])
             total += 1
             lengths += len(tokens)
@@ -44,7 +48,7 @@ def retrieve(question: str, document_ids: list[str], limit: int = 6):
         average = lengths / max(total, 1)
         heap = []
         serial = 0
-        for row in con.execute(sql, document_ids):
+        for row in con.execute(sql, params):
             tokens = terms(row['text'])
             counts = Counter(tokens)
             score = 0.0

@@ -13,6 +13,7 @@ from .comparison_facts import FACETS, grounded_findings, identify
 from .config import model_config
 from .db import connect
 from .documents import words
+from .parameter_tables import find_parameter_cell
 from .retrieval import retrieve
 
 log = logging.getLogger(__name__)
@@ -94,12 +95,18 @@ def find_facets(task_id, paper, key, model_query, evidence):
         query = f'{facet.query} {model_query}'.strip()
         item = {'label': facet.label, 'status': 'missing', 'searched_queries': [query]}
         sequence = None
-        for index, attempt in enumerate((query, facet.retry)):
+        attempts = [(query, None), (facet.retry, None)]
+        if key == 'parameters':
+            attempts.append(('we introduce present report family series parameters', 4))
+        for index, (attempt, max_page) in enumerate(attempts):
             if index:
-                detail = '已找到训练序列，继续查找模型窗口。' if sequence else '缺少可核对证据，补查。'
+                if max_page:
+                    detail = '优先补查前四页的模型介绍。'
+                else:
+                    detail = '已找到训练序列，继续查找模型窗口。' if sequence else '缺少可核对证据，补查。'
                 event(task_id, 'retry_evidence', f'{paper["filename"]} 的「{facet.label}」{detail}')
                 item['searched_queries'].append(attempt)
-            for source in retrieve(attempt, [paper['id']], limit=12):
+            for source in retrieve(attempt, [paper['id']], limit=24 if max_page else 12, max_page=max_page):
                 facts = identify(source['text'], facet)
                 if not facts:
                     continue
@@ -115,6 +122,14 @@ def find_facets(task_id, paper, key, model_query, evidence):
             source, facts = sequence
             evidence[source['id']] = source
             item.update(facts, status='verified_excerpt', source_id=source['id'], quote=source['text'].strip())
+        if key == 'parameters':
+            table = find_parameter_cell(paper, item if item['status'] == 'verified_excerpt' else None)
+            if table:
+                source, facts = table
+                evidence[source['id']] = source
+                item.update(facts, status='verified_excerpt', source_id=source['id'], quote=source['text'])
+                event(task_id, 'read_parameter_table',
+                      f'{paper["filename"]} 第 {source["page"]} 页模型配置表核对到 {source["text"]}。')
         excerpts.append(item)
     return excerpts
 

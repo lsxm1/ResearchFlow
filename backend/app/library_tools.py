@@ -68,8 +68,32 @@ def outline_from_text(pages):
     return outline[:250]
 
 
-def page_tables(page, blocks):
-    tables = [{'bbox': list(table.bbox), 'rows': table.extract(), 'method': 'grid'} for table in page.find_tables().tables]
+TABLE_CAPTION = re.compile(r'\s*Table\s+\d+(?:\.\d+)*\s*[:.]', re.I)
+
+
+def table_record(table, method, caption=None, *, with_cells=False):
+    aligned = [(row, geometry.cells) for row, geometry in zip(table.extract(), table.rows, strict=True)
+               if method == 'grid' or any(row)]
+    record = {'bbox': list(table.bbox), 'rows': [row for row, _ in aligned], 'method': method}
+    if with_cells:
+        record.update(caption=caption[4].strip() if caption else '',
+                      cells=[[list(cell) if cell is not None else None for cell in geometry]
+                             for _, geometry in aligned])
+    return record
+
+
+def nearest_caption(table, captions):
+    left, top, right, bottom = table.bbox
+    candidates = [(max(top - block[3], block[1] - bottom), block) for block in captions
+                  if block[0] < right and block[2] > left]
+    return min((item for item in candidates if 0 <= item[0] <= 26), default=(0, None),
+               key=lambda item: item[0])[1]
+
+
+def page_tables(page, blocks, *, with_cells=False):
+    captions = [block for block in blocks if TABLE_CAPTION.match(block[4])]
+    tables = [table_record(table, 'grid', nearest_caption(table, captions) if with_cells else None,
+                           with_cells=with_cells) for table in page.find_tables().tables]
     if tables:
         return tables
     # LaTeX booktabs tables often use horizontal rules and place the caption below.
@@ -83,9 +107,7 @@ def page_tables(page, blocks):
                 key = tuple(sorted((round(left.x, 1), round(right.x, 1))))
                 rules.setdefault(key, set()).add(round(left.y, 1))
 
-    for caption in blocks:
-        if not re.match(r'\s*Table\s+\d+\s*[:.]', caption[4], re.I):
-            continue
+    for caption in captions:
         candidates = []
         for (left, right), lines in rules.items():
             if len(lines) < 2 or left < caption[0] - 12 or right > caption[2] + 12:
@@ -106,9 +128,9 @@ def page_tables(page, blocks):
             _, clip = min(candidates, key=lambda item: item[0])
             previous_count = len(tables)
             for table in page.find_tables(clip=clip & page.rect, strategy='text').tables:
-                rows = [row for row in table.extract() if any(row)]
-                if len(rows) >= 3 and 2 <= table.col_count <= 18:
-                    tables.append({'bbox': list(table.bbox), 'rows': rows, 'method': 'ruled_text'})
+                record = table_record(table, 'ruled_text', caption, with_cells=with_cells)
+                if len(record['rows']) >= 3 and 2 <= table.col_count <= 18:
+                    tables.append(record)
             if len(tables) > previous_count:
                 continue
 
@@ -129,11 +151,23 @@ def page_tables(page, blocks):
         clip = pymupdf.Rect(min(b[0] for b in region)-2, min(b[1] for b in region)-2,
                             max(b[2] for b in region)+2, bottom+2) & page.rect
         for table in page.find_tables(clip=clip, strategy='text').tables:
-            rows = [row for row in table.extract() if any(row)]
+            record = table_record(table, 'caption_text', caption, with_cells=with_cells)
+            rows = record['rows']
             numeric_rows = sum(any(re.fullmatch(r'[+−-]?\d+(?:\.\d+)?%?', cell or '') for cell in row) for row in rows)
             if numeric_rows >= 2 and len(rows) >= 3 and 2 <= table.col_count <= 18:
-                tables.append({'bbox': list(table.bbox), 'rows': rows, 'method': 'caption_text'})
+                tables.append(record)
     return tables
+
+
+def parameter_table_pages(doc_id, pages):
+    """Read only candidate pages on the single PyMuPDF worker."""
+    result = []
+    with pymupdf.open(UPLOADS / f'{doc_id}.pdf') as pdf:
+        for number in pages:
+            page = pdf[number - 1]
+            blocks = sorted((block for block in page.get_text('blocks') if block[6] == 0), key=lambda block: block[1])
+            result.append((number, page_tables(page, blocks, with_cells=True)))
+    return result
 
 
 def inspect_pdf(doc_id, page=None):

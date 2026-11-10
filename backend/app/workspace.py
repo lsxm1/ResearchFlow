@@ -67,6 +67,9 @@ def reading_page(doc_id: str, page: int, language: Literal['Chinese', 'English']
         row = con.execute('SELECT text,source FROM pages WHERE document_id=? AND page=?', (doc_id, page)).fetchone()
         anchor = con.execute('SELECT bbox FROM chunks WHERE id=? AND document_id=? AND page=?',
                              (evidence_id, doc_id, page)).fetchone() if evidence_id else None
+        if anchor is None and evidence_id:
+            anchor = con.execute('SELECT bbox FROM table_anchors WHERE id=? AND document_id=? AND page=?',
+                                 (evidence_id, doc_id, page)).fetchone()
     text = row['text'] if row else ''
     highlight = pdf_operation(library_tools.page_anchor, doc_id, page, json.loads(anchor['bbox'])) if anchor else None
     return {'text': text, 'source': row['source'] if row else 'native',
@@ -277,7 +280,9 @@ def comparison_report(task, base_url):
     def citation(source, quote):
         page = ' '.join(quote.splitlines())
         ocr = ' · OCR' if source.get('source') == 'ocr' else ''
-        return f"{page} [{source['title']} · 第 {source['page']} 页{ocr}]({base_url}{source['file_url']})"
+        table = source.get('table')
+        cell = f" · 表格第 {table['row']} 行第 {table['column']} 列（{table['heading']}）" if table else ''
+        return f"{page} [{source['title']} · 第 {source['page']} 页{cell}{ocr}]({base_url}{source['file_url']})"
 
     lines = ['# ResearchFlow 研究报告', '', '## 研究问题', task['question'], '', '## 论文',
              *[f"- {item['title']} · {item['filename']}" for item in table['papers']]]

@@ -125,7 +125,7 @@ def verify(client: httpx.Client, fixture: Path, empty: bool, gpt_fixtures: Path 
         assert gpt_task['document_ids'] == ids
         assert not any(event['tool'] == 'download_pdf' for event in gpt_task['events'])
         expected = {
-            'parameters': (None, ('parameter_count', 1_500_000_000, (1,)), ('parameter_count', 175_000_000_000, (1, 8))),
+            'parameters': (None, ('parameter_count', 1_542_000_000, (4,)), ('parameter_count', 175_000_000_000, (1, 8))),
             'context': (('training_sequence', 512, (5,)), ('context_window', 1024, (4,)), ('context_window', 2048, (6, 8))),
             'layer_norm': (None, ('pre_norm_final', None, (4,)), ('pre_norm', None, (8,))),
         }
@@ -133,19 +133,27 @@ def verify(client: httpx.Client, fixture: Path, empty: bool, gpt_fixtures: Path 
             for doc_id, cell, case in zip(ids, gpt_rows[key], cases, strict=True):
                 item, = cell['excerpts']
                 if case is None:
-                    assert item['status'] == 'missing' and len(item['searched_queries']) == 2
+                    assert item['status'] == 'missing' and len(item['searched_queries']) == (3 if key == 'parameters' else 2)
                     continue
                 kind, value, pages = case
                 assert item['kind'] == kind and item.get('value') == value, item
                 page = gpt_sources[item['source_id']]['page']
                 assert page in pages
                 check_cell({'document_id': doc_id, **item}, gpt_sources, page, ())
+        exact = gpt_rows['parameters'][1]['excerpts'][0]
+        table_source = gpt_sources[exact['source_id']]
+        assert exact['quote'] == '1542M' and table_source['table']['heading'] == 'Parameters'
+        assert (table_source['table']['row'], table_source['table']['column']) == (5, 1)
+        anchor = get(f"/api/read/{ids[1]}/pages/4?evidence_id={table_source['id']}").json()['highlight']
+        assert anchor and 0 < anchor[2] < .15 and 0 < anchor[3] < .04, anchor
+        assert get(f"/api/read/{ids[1]}/pages/3?evidence_id={table_source['id']}").json()['highlight'] is None
         findings = gpt_task['result']['comparison']['findings']
         assert len(findings) == 3
         assert {gpt_sources[ref['source_id']]['document_id'] for ref in findings[1]['citations']} == set(ids)
         assert '1,024 tokens' in findings[1]['text'] and '训练序列长度' in findings[1]['text']
         gpt_report = get(f"/api/tasks/{gpt_task['id']}/report.md").text
-        assert all(term in gpt_report for term in ('175 B', '512 tokens', '未检得可直接核对'))
+        assert re.search(r'175(?:\.0)?\s*B', gpt_report)
+        assert all(term in gpt_report for term in ('1542M', '表格第 5 行第 1 列', '512 tokens', '未检得可直接核对'))
         print(f"PASS GPT three-paper comparison; task={gpt_task['id']}")
 
 

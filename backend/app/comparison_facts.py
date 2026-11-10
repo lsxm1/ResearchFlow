@@ -24,8 +24,12 @@ DERIVED_ENCODER = (
 )
 AMOUNT = r'\d[\d,]*(?:\.\d+)?'
 TIME = rf'{AMOUNT}\s+(?:hours?|days?|minutes?)'
-PARAMETER_COUNT = rf'(?P<amount>{AMOUNT})\s*(?P<unit>million|billion|[mb])'
+PARAMETER_COUNT = rf'(?P<amount>{AMOUNT})\s*[-–]?\s*(?P<unit>million|billion|[mb])'
+MODEL_RANGE_START = rf'{AMOUNT}\s*(?:million|billion|[mb])(?:\s+parameters)?'
+SERIES_COUNT = rf'{AMOUNT}\s*(?:million|billion|[mb])'
+MODEL_SERIES = rf'(?P<series>{SERIES_COUNT}(?:\s*(?:,\s*(?:and\s+)?|and\s+){SERIES_COUNT})+)'
 TOKENS = r'(?P<amount>\d{1,3}(?:,\d{3})+|\d+)'
+PARAMETER_SCALES = {'b': 10**9, 'billion': 10**9, 'm': 10**6, 'million': 10**6}
 FACETS = {
     'architecture': (
         Facet('encoder', '编码器设计',
@@ -63,7 +67,12 @@ FACETS = {
               'model size largest model parameter count billion total parameters',
               (('parameter_count', rf'\bour (?:largest )?model\b[^.!?]{{0,65}}\b(?:is a|has|with)\s+{PARAMETER_COUNT}[- ]+parameters?\b'),
                ('parameter_count', rf'\bwe (?:train(?:ed)?|introduce|present)\b[^.!?]{{0,120}}\bwith {PARAMETER_COUNT}\s+parameters\b'),
-               ('parameter_count', rf'\bwe (?:train|trained)\b[^.!?]{{0,175}}\bfrom {AMOUNT}\s+million parameters to {PARAMETER_COUNT}\s+parameters\b'))),
+               ('parameter_count', rf'\bwe (?:train(?:ed)?|introduce|present|release)\b[^.!?]{{0,230}}'
+                rf'\b(?:ranging(?: in size)? from|from) {MODEL_RANGE_START} to {PARAMETER_COUNT}\s+parameters\b'),
+               ('parameter_count', rf'\bwe (?:introduce|present|release|train)\s+(?!(?:the|a|an|results|models?)\b)'
+                rf'[\w -]{{2,40}},\s+(?:a|an)\s+{PARAMETER_COUNT}[- ]+parameters?\b'),
+               ('parameter_count', rf'\bwe (?:introduce|present|release|train)\b[^.!?]{{0,75}}'
+                rf'\b(?:series|family|suite)\s*:\s*{MODEL_SERIES}\s+parameters?\b'))),
     ),
     'context': (
         Facet('context_size', '上下文窗口或训练序列',
@@ -86,6 +95,13 @@ FACETS = {
 }
 
 
+def parameter_measurement(amount, unit):
+    value = Decimal(amount.replace(',', ''))
+    scale = PARAMETER_SCALES[unit]
+    return {'value': int(value * scale), 'display': f'{value:g} {"B" if scale == 10**9 else "M"}',
+            'rounding_step': int(Decimal(10) ** value.as_tuple().exponent * scale)}
+
+
 def identify(text, facet):
     text = re.sub(r'(?<=\w)-[ \t]*\r?\n[ \t]*(?=\w)', '', text)
     normalized = ' '.join(unicodedata.normalize('NFKC', text).split()).casefold()
@@ -96,12 +112,14 @@ def identify(text, facet):
         facts = {'kind': kind}
         if kind in FACT_LABELS:
             facts['label'] = FACT_LABELS[kind]
-        if amount := match.groupdict().get('amount'):
+        if series := match.groupdict().get('series'):
+            facts.update(max((parameter_measurement(item['amount'], item['unit'])
+                              for item in re.finditer(PARAMETER_COUNT, series)), key=lambda item: item['value']))
+        elif amount := match.groupdict().get('amount'):
             value = Decimal(amount.replace(',', ''))
             unit = match.groupdict().get('unit')
             if unit:
-                scale = 10**9 if unit in ('b', 'billion') else 10**6
-                facts.update(value=int(value * scale), display=f'{value:g} {"B" if scale == 10**9 else "M"}')
+                facts.update(parameter_measurement(amount, unit))
             else:
                 facts.update(value=int(value), display=f'{int(value):,} tokens')
         return facts
@@ -131,7 +149,7 @@ def measured_findings(papers, rows):
                 missing.append(title)
                 continue
             excerpts.append(item)
-            observations.append(f"{title}{FACT_LABELS[item['kind']]} {item.get('display', '')}".rstrip())
+            observations.append(f"{title}{item['label']} {item.get('display', '')}".rstrip())
         if len(excerpts) < 2:
             continue
         text = '，'.join(observations) + '。'

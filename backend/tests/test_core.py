@@ -159,11 +159,24 @@ class CoreTests(unittest.TestCase):
         wrong_page = self.client.get(f'/api/read/{target}/pages/1', params={'evidence_id': duration['id']}).json()
         self.assertIsNone(wrong_page['highlight'])
 
+    def test_parameter_table_requires_scope_and_consistent_precision(self):
+        from app.parameter_tables import table_maximum
+
+        table = {'caption': 'Table 1. Architecture of our models.',
+                 'rows': [['Parameters', 'Layers'], ['120M', '8'], ['1542M', '24']],
+                 'cells': [[None, None], [[10, 20, 40, 30], None], [[10, 30, 40, 40], None]]}
+        prose = {'value': 1_500_000_000, 'rounding_step': 100_000_000}
+        value, quote, _, location = table_maximum(table, prose)
+        self.assertEqual((value, quote, location['row'], location['column']), (1_542_000_000, '1542M', 3, 1))
+        self.assertIsNone(table_maximum(table, {'value': 1_200_000_000, 'rounding_step': 100_000_000}))
+        self.assertIsNone(table_maximum({**table, 'caption': 'Table 2. Baseline model size comparison.'}, prose))
+        self.assertIsNone(table_maximum({**table, 'rows': [['Non-Embedding Params', 'Layers'], *table['rows'][1:]]}, None))
+
     def test_multi_paper_comparison_keeps_measurements_in_scope(self):
         papers = (
             'We train for 20 epochs on contiguous sequences of 256 tokens. A cited baseline has 900 million parameters.',
-            'Our largest model is a 20 million parameter transformer. All models use a context window of 512 tokens.',
-            'Our model has 3 billion parameters. We increase the context size from 512 to 1024 tokens.',
+            'We introduce SampleLM, a 20-million-parameter model. All models use a context window of 512 tokens.',
+            'We present SampleLM, a family ranging from 90M to 3B parameters. We increase the context size from 512 to 1024 tokens.',
         )
         ids = []
         for index, text in enumerate(papers):

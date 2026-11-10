@@ -5,7 +5,7 @@ import { Discovery, Graph, Reading, Writing } from './ResearchTools';
 import './style.css';
 
 type Paper = {id: string; title: string; filename: string; status: string; page_count: number; processed_pages: number; text_pages: number; file_url: string; error?: string; version?: number; archived: boolean};
-type Evidence = {id: string; document_id: string; title: string; filename: string; page: number; text: string; bbox: number[]; score: number; file_url: string; source?: 'native' | 'ocr'};
+type Evidence = {id: string; document_id: string; title: string; filename: string; page: number; text: string; bbox: number[]; score: number; file_url: string; source?: 'native' | 'ocr'; table?: {caption: string; row: number; column: number; heading: string}};
 type Citation = {source_id: string; quote: string};
 type ComparisonExcerpt = {label: string; display?: string; source_id?: string; quote?: string; searched_queries: string[]};
 type ComparisonCell = {document_id: string; status: 'missing' | 'candidate' | 'cited_summary' | 'verified_excerpt' | 'partial'; source_id?: string; quote?: string; text?: string; searched_queries?: string[]; excerpts?: ComparisonExcerpt[]};
@@ -46,11 +46,14 @@ function EvidenceCards({sources, openPaper}: {sources: Evidence[]; openPaper: (i
 }
 
 function SourceExcerpt({source, quote, openEvidence, title}: {source: Evidence; quote?: string; openEvidence: (source: Evidence) => void; title?: string}) {
+  const table = source.table;
   return <div className="source-excerpt">
     <button className="source-jump" onClick={() => openEvidence(source)}>
-      {title && `${title} · `}第 {source.page} 页原文 ↗
+      {title && `${title} · `}第 {source.page} 页{table ? ` · 表格第 ${table.row} 行第 ${table.column} 列` : '原文'} ↗
     </button>
-    <details><summary>{source.source === 'ocr' ? '查看 OCR 引句' : '查看引句'}</summary><p>{quote}</p></details>
+    <details><summary>{table ? '查看表格证据' : source.source === 'ocr' ? '查看 OCR 引句' : '查看引句'}</summary>
+      {table && <p>{table.caption}</p>}<p>{table && `${table.heading} · `}{quote}</p>
+    </details>
   </div>;
 }
 

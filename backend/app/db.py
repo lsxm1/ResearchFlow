@@ -49,6 +49,10 @@ def init_db():
             page INTEGER NOT NULL, text TEXT NOT NULL, bbox TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS chunks_document ON chunks(document_id);
+        CREATE TABLE IF NOT EXISTS table_anchors (
+            id TEXT PRIMARY KEY, document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            page INTEGER NOT NULL, bbox TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS tasks (
             id TEXT PRIMARY KEY, question TEXT NOT NULL, document_ids TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'queued', events TEXT NOT NULL DEFAULT '[]',
