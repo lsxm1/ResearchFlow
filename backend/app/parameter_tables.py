@@ -28,27 +28,12 @@ def candidate_pages(doc_id):
     return [page for _, page in sorted(ranked)[:6]]
 
 
-def table_maximum(table, prose):
-    caption = ' '.join(table['caption'].split())
-    if not re.search(r'\b(?:architecture|architectural|hyper[- ]?parameters|model sizes?)\b', caption, re.I):
-        return None
-    if re.search(r'\b(?:benchmark|baselines?|comparison|accuracy|performance)\b', caption, re.I):
-        return None
-    if prose is None and not re.search(r'\bour\b.{0,40}\bmodels?\b|\bmodels? (?:used|trained) in this work\b', caption, re.I):
-        return None
-    rows = table['rows']
-    if len(rows) < 2:
-        return None
-    columns = [(index, match) for index, heading in enumerate(rows[0])
-               if (match := PARAMETER_HEADER.fullmatch(' '.join((heading or '').split())))]
-    if len(columns) != 1:
-        return None
-    column, header = columns[0]
+def axis_maximum(table, coordinates, header):
     values = []
-    for index, row in enumerate(rows[1:], start=1):
-        cell = (row[column] or '').strip()
+    for row, column in coordinates:
+        cell = (table['rows'][row][column] or '').strip()
         match = COUNT.fullmatch(' '.join(cell.split()))
-        bbox = table['cells'][index][column]
+        bbox = table['cells'][row][column]
         if not match or not bbox:
             return None
         unit = match['unit'] or header['unit']
@@ -57,12 +42,40 @@ def table_maximum(table, prose):
             return None
         if not unit and value < 10_000:
             return None  # Small bare values may use an unstated scale.
-        values.append((int(value), index, cell, bbox))
-    value, index, cell, bbox = max(values, key=lambda item: item[0])
+        values.append((int(value), row, column, cell, bbox))
+    return max(values, key=lambda item: item[0], default=None)
+
+
+def table_maximum(table, prose):
+    caption = ' '.join(table['caption'].split())
+    if not re.search(r'\b(?:architecture|architectural|hyper[- ]?parameters|model sizes?|key model parameters)\b', caption, re.I):
+        return None
+    if re.search(r'\b(?:benchmark|baselines?|comparison|accuracy|performance)\b', caption, re.I):
+        return None
+    if prose is None and not re.search(r'\bour\b.{0,40}\bmodels?\b|\bmodels? (?:used|trained) in this work\b', caption, re.I):
+        return None
+    rows = table['rows']
+    if len(rows) < 2:
+        return None
+    axes = (
+        ('column', rows[0], lambda column: ((row, column) for row in range(1, len(rows)))),
+        ('row', [row[0] for row in rows], lambda row: ((row, column) for column in range(1, len(rows[row])))),
+    )
+    matches = []
+    for orientation, headings, coordinates in axes:
+        headers = [(index, heading, match) for index, heading in enumerate(headings)
+                   if (match := PARAMETER_HEADER.fullmatch(' '.join((heading or '').split())))]
+        if len(headers) == 1:
+            index, heading, header = headers[0]
+            if maximum := axis_maximum(table, coordinates(index), header):
+                matches.append((maximum, orientation, heading.strip()))
+    if len(matches) != 1:
+        return None
+    (value, row, column, cell, bbox), orientation, heading = matches[0]
     if prose and abs(value - prose['value']) * 2 > prose['rounding_step']:
         return None
-    return value, cell, bbox, {'caption': caption, 'row': index + 1, 'column': column + 1,
-                               'heading': rows[0][column].strip()}
+    location = {'caption': caption, 'row': row + 1, 'column': column + 1, 'heading': heading}
+    return value, cell, bbox, location, orientation
 
 
 def find_parameter_cell(paper, prose):
@@ -80,7 +93,7 @@ def find_parameter_cell(paper, prose):
                if (match := table_maximum(table, prose))]
     if not matches or len({item[1] for item in matches}) != 1:
         return None
-    page, value, quote, bbox, table = matches[0]
+    page, value, quote, bbox, table, orientation = matches[0]
     doc_id = paper['id']
     location = json.dumps([page, bbox, table, quote], ensure_ascii=False, sort_keys=True)
     digest = hashlib.sha256(location.encode()).hexdigest()[:20]
@@ -91,4 +104,5 @@ def find_parameter_cell(paper, prose):
     evidence = {'id': source_id, 'document_id': doc_id, 'title': paper['title'], 'filename': paper['filename'],
                 'page': page, 'text': quote, 'bbox': bbox, 'score': 0, 'source': 'native', 'table': table,
                 'file_url': f'/api/documents/{doc_id}/file#page={page}'}
-    return evidence, {'kind': 'parameter_count', 'label': '模型配置表最大参数量', 'value': value, 'display': quote}
+    label = '配置表报告的最大模型规模' if orientation == 'row' else '模型配置表最大参数量'
+    return evidence, {'kind': 'parameter_count', 'label': label, 'value': value, 'display': quote}

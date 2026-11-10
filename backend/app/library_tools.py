@@ -68,7 +68,7 @@ def outline_from_text(pages):
     return outline[:250]
 
 
-TABLE_CAPTION = re.compile(r'\s*Table\s+\d+(?:\.\d+)*\s*[:.]', re.I)
+TABLE_CAPTION = re.compile(r'\s*Table\s+\d+(?:\.\d+)*\s*[:.|]', re.I)
 
 
 def table_record(table, method, caption=None, *, with_cells=False):
@@ -109,8 +109,11 @@ def page_tables(page, blocks, *, with_cells=False):
 
     for caption in captions:
         candidates = []
+        middle = (page.rect.x0 + page.rect.x1) / 2
         for (left, right), lines in rules.items():
-            if len(lines) < 2 or left < caption[0] - 12 or right > caption[2] + 12:
+            # A short caption may end before the table's right edge.
+            same_column = abs(left - caption[0]) <= 12 and (right <= middle or min(left, caption[0]) >= middle)
+            if len(lines) < 2 or left < caption[0] - 12 or (right > caption[2] + 12 and not same_column):
                 continue
             # A caption between two tables may be next to either. Pick the nearest
             # adjacent rule group in its own column, and keep both directions possible.

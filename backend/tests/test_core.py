@@ -166,17 +166,34 @@ class CoreTests(unittest.TestCase):
                  'rows': [['Parameters', 'Layers'], ['120M', '8'], ['1542M', '24']],
                  'cells': [[None, None], [[10, 20, 40, 30], None], [[10, 30, 40, 40], None]]}
         prose = {'value': 1_500_000_000, 'rounding_step': 100_000_000}
-        value, quote, _, location = table_maximum(table, prose)
+        value, quote, _, location, orientation = table_maximum(table, prose)
         self.assertEqual((value, quote, location['row'], location['column']), (1_542_000_000, '1542M', 3, 1))
+        self.assertEqual(orientation, 'column')
         self.assertIsNone(table_maximum(table, {'value': 1_200_000_000, 'rounding_step': 100_000_000}))
         self.assertIsNone(table_maximum({**table, 'caption': 'Table 2. Baseline model size comparison.'}, prose))
         self.assertIsNone(table_maximum({**table, 'rows': [['Non-Embedding Params', 'Layers'], *table['rows'][1:]]}, None))
+
+    def test_parameter_table_reads_model_scales_across_rows(self):
+        from app.parameter_tables import table_maximum
+
+        bbox = [50, 20, 80, 30]
+        table = {'caption': 'Table 1 | Key model parameters.',
+                 'rows': [['Parameters', '2B', '7B'], ['Layers', '18', '28']],
+                 'cells': [[None, [20, 20, 50, 30], bbox], [None, None, None]]}
+        prose = {'value': 7_000_000_000, 'rounding_step': 1_000_000_000}
+        value, quote, cell, location, orientation = table_maximum(table, prose)
+        self.assertEqual((value, quote, cell, orientation), (7_000_000_000, '7B', bbox, 'row'))
+        self.assertEqual((location['row'], location['column']), (1, 3))
+        self.assertIsNone(table_maximum(table, None))
+        ambiguous = {**table, 'rows': [['Parameters', '2B', '7B'], ['7B', '18', '28']],
+                     'cells': [table['cells'][0], [[0, 30, 20, 40], None, None]]}
+        self.assertIsNone(table_maximum(ambiguous, prose))
 
     def test_multi_paper_comparison_keeps_measurements_in_scope(self):
         papers = (
             'We train for 20 epochs on contiguous sequences of 256 tokens. A cited baseline has 900 million parameters.',
             'We introduce SampleLM, a 20-million-parameter model. All models use a context window of 512 tokens.',
-            'We present SampleLM, a family ranging from 90M to 3B parameters. We increase the context size from 512 to 1024 tokens.',
+            'We develop and release SampleLM, a family ranging in scale from 90M to 3B parameters. We increase the context size from 512 to 1024 tokens.',
         )
         ids = []
         for index, text in enumerate(papers):
