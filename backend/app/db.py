@@ -35,6 +35,7 @@ def init_db():
             page_count INTEGER NOT NULL DEFAULT 0, processed_pages INTEGER NOT NULL DEFAULT 0,
             text_pages INTEGER NOT NULL DEFAULT 0, ocr_pages INTEGER NOT NULL DEFAULT 0, arxiv_id TEXT, version INTEGER,
             signature TEXT NOT NULL DEFAULT '[]', error TEXT,
+            archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0,1)),
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
         );
         CREATE TABLE IF NOT EXISTS pages (
@@ -64,6 +65,9 @@ def init_db():
         );
         ''')
         con.execute('BEGIN IMMEDIATE')
+        columns = {column['name'] for column in con.execute('PRAGMA table_info(documents)')}
+        if 'archived' not in columns:
+            con.execute('ALTER TABLE documents ADD COLUMN archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0,1))')
         columns = {column['name'] for column in con.execute('PRAGMA table_info(pages)')}
         if 'source' not in columns:
             con.execute("ALTER TABLE pages ADD COLUMN source TEXT NOT NULL DEFAULT 'native'")
@@ -83,6 +87,7 @@ def document(row):
     data = dict(row)
     data.pop('signature', None)
     data.pop('sha256', None)
+    data['archived'] = bool(data['archived'])
     data['file_url'] = f"/api/documents/{data['id']}/file"
     return data
 

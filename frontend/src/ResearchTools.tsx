@@ -3,7 +3,7 @@ import type { UIEvent } from 'react';
 import { api, post } from './api';
 
 type OpenPaper = (id: string, page: number) => void;
-type Paper = {id: string; title: string; filename: string; page_count: number; status: string};
+type Paper = {id: string; title: string; filename: string; page_count: number; status: string; archived: boolean};
 type Ref = {label: string; page: number; text: string; citation_page: number | null};
 type Index = {title: string; metadata: {author: string}; abstract: string; outline: {title: string; page: number; level: number}[]; references: Ref[]};
 type Page = {text: string; source: string; translation: string | null; citations: string[]; highlight?: [number, number, number, number] | null};
@@ -146,7 +146,7 @@ export function Reading({papers, paperId, page, open, evidenceId}: {papers: Pape
       <select aria-label="译文语言" value={language} disabled={busy || !!job} onChange={e => setLanguage(e.target.value as 'Chinese' | 'English')}>
         <option value="Chinese">中文</option><option value="English">学术英文</option>
       </select>
-      <select aria-label="阅读文献" value={paper.id} onChange={e => open(e.target.value,1)}>{papers.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select>
+      <select aria-label="阅读文献" value={paper.id} onChange={e => open(e.target.value,1)}>{papers.map(item => <option key={item.id} value={item.id}>{item.title}{item.archived ? ' · 归档' : ''}</option>)}</select>
       <button disabled={pageNumber <= 1} onClick={() => open(paper.id,pageNumber-1)}>上一页</button>
       <span>{pageNumber} / {paper.page_count}</span>
       <button disabled={pageNumber >= paper.page_count} onClick={() => open(paper.id,pageNumber+1)}>下一页</button>

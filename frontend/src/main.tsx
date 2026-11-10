@@ -1,10 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { api } from './api';
+import { api, post } from './api';
 import { Discovery, Graph, Reading, Writing } from './ResearchTools';
 import './style.css';
 
-type Paper = {id: string; title: string; filename: string; status: string; page_count: number; processed_pages: number; text_pages: number; file_url: string; error?: string; version?: number};
+type Paper = {id: string; title: string; filename: string; status: string; page_count: number; processed_pages: number; text_pages: number; file_url: string; error?: string; version?: number; archived: boolean};
 type Evidence = {id: string; document_id: string; title: string; filename: string; page: number; text: string; bbox: number[]; score: number; file_url: string; source?: 'native' | 'ocr'};
 type Citation = {source_id: string; quote: string};
 type ComparisonExcerpt = {label: string; source_id?: string; quote?: string; searched_queries: string[]};
@@ -16,7 +16,7 @@ type Comparison = {
 };
 type Task = {id: string; question: string; document_ids: string[]; status: string; events: {step: string; message: string; tool: string; time: string}[]; result: null | {mode: string; claims: {text: string; source_id: string; quote: string}[]; evidence: Evidence[]; warnings: string[]; comparison?: Comparison}};
 type Health = {model_mode: string; model_name?: string; version: string; ocr_available: boolean};
-type Duplicate = {document_id: string; title: string; similarity: number; recommendation: string};
+type Duplicate = {document_id: string; title: string; filename: string; version?: number; similarity: number; recommendation: string};
 
 const statuses: Record<string, string> = {queued: '等待解析', parsing: '解析中', ready: '可检索', partial: '部分页面需OCR', needs_ocr: '需要OCR', failed: '失败'};
 const views = {
@@ -128,9 +128,14 @@ function App() {
   const [pageText, setPageText] = useState('');
   const [pageFromOcr, setPageFromOcr] = useState(false);
   const [duplicates, setDuplicates] = useState<Duplicate[]>([]);
+  const [changingVersion, setChangingVersion] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const paper = papers.find(x => x.id === current);
   const task = tasks.find(x => x.id === taskId);
+  const activePapers = papers.filter(item => !item.archived);
+  const archivedPapers = papers.filter(item => item.archived);
+  const archivedCount = archivedPapers.length;
+  const activeSelection = selected.filter(id => activePapers.some(p => p.id === id && ['ready','partial'].includes(p.status)));
 
   useEffect(() => {
     let active = true;
@@ -152,11 +157,11 @@ function App() {
   useEffect(() => {
     let active = true;
     setDuplicates([]);
-    if (current && paper && !['queued', 'parsing'].includes(paper.status)) {
+    if (current && paper && !paper.archived && !['queued', 'parsing'].includes(paper.status)) {
       api<Paper & {duplicates: Duplicate[]}>(`/documents/${current}`).then(d => {if (active) setDuplicates(d.duplicates);}).catch(() => {});
     }
     return () => {active = false;};
-  }, [current, paper?.status, papers.length]);
+  }, [current, paper?.status, paper?.archived, papers.length, archivedCount]);
 
   useEffect(() => {
     let active = true;
@@ -212,10 +217,9 @@ function App() {
   async function submit(compare = false) {
     setError(''); setSubmitting(true);
     try {
-      const valid = selected.filter(id => papers.some(p => p.id === id && ['ready','partial'].includes(p.status)));
       const response = await api<{id: string}>(compare ? '/tasks/compare' : '/tasks', {
         method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({question, document_ids: valid, ...(compare ? {target_paper: targetPaper.trim()} : {})}),
+        body: JSON.stringify({question, document_ids: activeSelection, ...(compare ? {target_paper: targetPaper.trim()} : {})}),
       });
       setTaskId(response.id);
       setTasks(await api<Task[]>('/tasks'));
@@ -231,6 +235,30 @@ function App() {
     } catch(e) {setError((e as Error).message);}
   }
 
+  async function resolveVersion(keepId: string, archiveId: string) {
+    setChangingVersion(true); setError('');
+    try {
+      await post('/documents/resolve-version', {keep_id: keepId, archive_id: archiveId});
+      setPapers(items => items.map(item => item.id === archiveId ? {...item, archived: true} : item));
+      setSelected(ids => ids.filter(id => id !== archiveId));
+      setDuplicates([]);
+      openPaper(keepId);
+      setNotice('已保留选中的版本。另一份可在文献库的「归档版本」中恢复。');
+    } catch (e) {setError((e as Error).message);}
+    finally {setChangingVersion(false);}
+  }
+
+  async function restoreVersion(id: string) {
+    setChangingVersion(true); setError('');
+    try {
+      await post(`/documents/${id}/restore`, {});
+      setPapers(items => items.map(item => item.id === id ? {...item, archived: false} : item));
+      openPaper(id);
+      setNotice('已恢复版本，可重新加入研究任务。');
+    } catch (e) {setError((e as Error).message);}
+    finally {setChangingVersion(false);}
+  }
+
   async function retryOcr(id: string) {
     setError('');
     try {
@@ -244,9 +272,9 @@ function App() {
     setPage(next); setPageInput(String(next));
   }
 
-  const eligibleCount = selected.filter(id => papers.some(p => p.id === id && ['ready','partial'].includes(p.status))).length;
+  const eligibleCount = activeSelection.length;
   const readable = papers.filter(p => ['ready', 'partial', 'needs_ocr'].includes(p.status));
-  const scopedPapers = readable.filter(p => !selected.length || selected.includes(p.id)).slice(0, 24).map(p => p.id);
+  const scopedPapers = readable.filter(p => !p.archived && (!activeSelection.length || activeSelection.includes(p.id))).slice(0, 24).map(p => p.id);
   return <div className="app">
     <aside className="nav">
       <div className="brand"><span className="brand-symbol">R<span>·</span></span><div>ResearchFlow<small>科研证据工作台</small></div></div>
@@ -266,22 +294,41 @@ function App() {
         : view === 'writing' ? <Writing ids={scopedPapers}/>
         : view === 'roadmap' ? <section className="roadmap">{roadmap.map(([num, title, state, desc]) => <article className="module-card" key={num}><span className="module-number">{num}</span><span className="state">{state}</span><h2>{title}</h2><p>{desc}</p></article>)}</section>
         : <div className="workspace">
-        <section className="panel library"><div className="panel-heading"><div><h2>文献库 <span className="count">{papers.length}</span></h2><p>勾选文献，限定任务证据范围</p></div></div>
+        <section className="panel library"><div className="panel-heading"><div><h2>文献库 <span className="count">{activePapers.length}</span></h2><p>勾选文献，限定任务证据范围</p></div></div>
           <input ref={fileInput} type="file" accept="application/pdf,.pdf" multiple aria-label="上传PDF文件" onChange={e => void upload(e.target.files)} hidden/>
           <button className="upload" disabled={uploading || !health} onClick={() => fileInput.current?.click()}><span>＋</span>{uploading ? '上传中…' : '导入 PDF 文献'}<small>可多选 · 每份最多50MB</small></button>
-          <div className="paper-list">{!papers.length ? <div className="empty small"><span>▧</span><h3>研究从一篇论文开始</h3><p>上传你的PDF，解析进度会显示在这里。</p></div> : papers.map(p => <article className={`paper ${current === p.id ? 'selected' : ''}`} key={p.id}>
+          <div className="paper-list">{!papers.length ? <div className="empty small"><span>▧</span><h3>研究从一篇论文开始</h3><p>上传你的PDF，解析进度会显示在这里。</p></div> : activePapers.map(p => <article className={`paper ${current === p.id ? 'selected' : ''}`} key={p.id}>
             <div className="paper-top"><input type="checkbox" aria-label={`将${p.filename}加入任务`} checked={selected.includes(p.id)} disabled={!['ready','partial'].includes(p.status)} onChange={e => setSelected(s => e.target.checked ? [...s, p.id] : s.filter(x => x !== p.id))}/><button className="paper-title" onClick={() => openPaper(p.id)} title={p.title}>{p.title}</button></div>
             <div className="filename" title={p.filename}>{p.filename}</div><div className="paper-meta"><span className={`state ${p.status}`}>{statuses[p.status] || p.status}</span><span>{p.page_count ? `${p.processed_pages}/${p.page_count}页` : '排队中'}</span></div>
             {['queued','parsing'].includes(p.status) && <progress max={p.page_count || 1} value={p.processed_pages} aria-label="解析进度"/>}
             {p.error && <p className="inline-error">{p.error}</p>}
             <div className="paper-actions"><button onClick={() => openPaper(p.id)}>打开原文 ↗</button><button onClick={() => void remove(p.id)} aria-label={`删除${p.filename}`}>移除</button></div>
-          </article>)}</div>
+          </article>)}
+          {!!archivedPapers.length && <details className="archived-papers">
+            <summary>归档版本（{archivedPapers.length}）</summary>
+            {archivedPapers.map(item => <article className="paper" key={item.id}>
+              <button className="paper-title" onClick={() => openPaper(item.id)}>{item.title}{item.version ? ` · v${item.version}` : ''}</button>
+              <p className="filename">{item.filename}</p>
+              <button disabled={changingVersion} onClick={() => void restoreVersion(item.id)}>恢复到文献库</button>
+            </article>)}
+          </details>}</div>
           <div className="library-footer">{eligibleCount} 篇已选 · 当前为单用户本地工作区</div>
         </section>
         <section className="panel reader"><div className="panel-heading"><div><h2>原文阅读</h2><p>{paper ? paper.filename : '查看证据对应的PDF页面'}</p></div><div className="segmented"><button className={readerMode === 'pdf' ? 'chosen' : ''} onClick={() => setReaderMode('pdf')}>PDF</button><button className={readerMode === 'text' ? 'chosen' : ''} onClick={() => setReaderMode('text')}>提取文本</button></div></div>
           {paper ? <>
             <div className="reader-toolbar"><button onClick={() => jump(page-1)} disabled={page <= 1} aria-label="上一页">←</button><form onSubmit={e => {e.preventDefault(); jump(Number(pageInput));}}><input type="number" min="1" max={paper.page_count || 1} value={pageInput} onChange={e => setPageInput(e.target.value)} aria-label="PDF页码"/> / {paper.page_count || '…'} 页 <button type="submit">跳转</button></form><button onClick={() => jump(page+1)} disabled={page >= paper.page_count} aria-label="下一页">→</button><a href={`${paper.file_url}#page=${page}`} target="_blank" rel="noreferrer">新窗口 ↗</a></div>
-            {duplicates.map(d => <div className="duplicate" key={d.document_id}><strong>发现正文相似文献 · {Math.round(d.similarity * 100)}%</strong><span>{d.recommendation}</span><button onClick={() => openPaper(d.document_id)}>查看已有文献 ↗</button></div>)}
+            {paper.archived && <div className="reader-note">当前是归档版本。 <button disabled={changingVersion} onClick={() => void restoreVersion(paper.id)}>恢复到文献库</button></div>}
+            {!paper.archived && duplicates.map(d => <div className="duplicate" key={d.document_id}>
+              <strong>发现正文相似文献 · {Math.round(d.similarity * 100)}%</strong>
+              <span>当前 {paper.filename}{paper.version ? ` · v${paper.version}` : ''}</span>
+              <span>对照 {d.filename}{d.version ? ` · v${d.version}` : ''}</span>
+              <span>{d.recommendation} 另一份将归档，可随时恢复。</span>
+              <div className="version-actions">
+                <button onClick={() => openPaper(d.document_id)}>查看对照原文 ↗</button>
+                <button disabled={changingVersion} onClick={() => void resolveVersion(d.document_id, paper.id)}>保留对照版本</button>
+                <button disabled={changingVersion} onClick={() => void resolveVersion(paper.id, d.document_id)}>用当前版本替换</button>
+              </div>
+            </div>)}
             {['needs_ocr', 'partial'].includes(paper.status) && <div className="reader-note">
               {health?.ocr_available
                 ? <>仍有页面需要识别。 <button onClick={() => void retryOcr(paper.id)}>重新进行 OCR ↗</button></>

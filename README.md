@@ -35,7 +35,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1 -LocalModel
 
 ## 第一次体验
 
-1. 上传v7，等待“可检索”；再上传改名后的v1，打开查看正文相似提示。
+1. 上传 v7，等待「可检索」，再上传改名后的 v1。正文相似提示中可以查看对照原文、保留对照版本或用当前版本替换。另一份会进入「归档版本」，可以恢复，历史任务的原文链接仍可打开。
 2. 勾选文献，输入 `What hardware and training schedule were used?`。
 3. 点击“检索原文证据”，查看执行记录，点击“第 N 页”核对原文。
 4. 上传扫描件，等待识别。已有扫描件显示“需要OCR”时，在原文阅读区点“重新进行 OCR”。检索后从带“OCR 识别片段”标记的结果打开对应页。

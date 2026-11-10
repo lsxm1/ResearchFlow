@@ -109,6 +109,38 @@ def detail(doc_id: str):
     return result
 
 
+class VersionChoice(BaseModel):
+    keep_id: str
+    archive_id: str
+
+
+@app.post('/api/documents/resolve-version')
+def resolve_version(body: VersionChoice):
+    if body.keep_id == body.archive_id:
+        raise HTTPException(422, '请选择两个不同的文献版本。')
+    with connect() as con:
+        con.execute('BEGIN IMMEDIATE')
+        pair = {row['id']: row for row in con.execute('SELECT * FROM documents WHERE id IN (?,?)',
+                                                     (body.keep_id, body.archive_id))}
+        if len(pair) != 2:
+            raise HTTPException(404, '其中一份文献已移除。')
+        kept, archived = pair[body.keep_id], pair[body.archive_id]
+        if kept['archived'] or any(row['status'] not in ('ready', 'partial') for row in pair.values()):
+            raise HTTPException(409, '文献状态已变化，请刷新后重新选择。')
+        a, b = (set(json.loads(row['signature'])) for row in (kept, archived))
+        if documents.body_similarity(a, b) < documents.DUPLICATE_THRESHOLD:
+            raise HTTPException(409, '两份文献未达到正文相似阈值。')
+        con.execute('UPDATE documents SET archived=1 WHERE id=?', (body.archive_id,))
+    return {'kept_id': body.keep_id, 'archived_id': body.archive_id}
+
+
+@app.post('/api/documents/{doc_id}/restore', status_code=204)
+def restore_document(doc_id: str):
+    with connect() as con:
+        if not con.execute('UPDATE documents SET archived=0 WHERE id=?', (doc_id,)).rowcount:
+            raise HTTPException(404, '文献不存在。')
+
+
 @app.get('/api/documents/{doc_id}/file')
 def pdf_file(doc_id: str):
     get_document(doc_id)
@@ -172,12 +204,17 @@ class CompareRequest(TaskRequest):
 
 def enqueue_task(body: TaskRequest, runner, *args):
     ids = list(dict.fromkeys(body.document_ids))
-    for doc_id in ids:
-        row = get_document(doc_id)
-        if row['status'] not in ('ready', 'partial'):
-            raise HTTPException(409, '选中文献尚未就绪，或需要OCR。')
     task_id = uuid4().hex
     with connect() as con:
+        con.execute('BEGIN IMMEDIATE')
+        for doc_id in ids:
+            row = con.execute('SELECT status,archived FROM documents WHERE id=?', (doc_id,)).fetchone()
+            if row is None:
+                raise HTTPException(404, '文献不存在。')
+            if row['archived']:
+                raise HTTPException(409, '请先恢复归档版本，再将其加入新任务。')
+            if row['status'] not in ('ready', 'partial'):
+                raise HTTPException(409, '选中文献尚未就绪，或需要OCR。')
         con.execute('INSERT INTO tasks(id,question,document_ids) VALUES (?,?,?)',
                     (task_id, body.question.strip(), json.dumps(ids)))
     agent.TASK_POOL.submit(runner, task_id, *args)

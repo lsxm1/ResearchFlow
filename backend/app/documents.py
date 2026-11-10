@@ -187,27 +187,36 @@ def parse_document(doc_id: str):
             con.execute("UPDATE documents SET status='failed', error=? WHERE id=?", (message, doc_id))
 
 
+def body_similarity(a, b):
+    if not a or not b:
+        return 0.0
+    # Bottom-k sketch estimate using the shared sample threshold.
+    threshold = min(max(a), max(b))
+    aa, bb = {x for x in a if x <= threshold}, {x for x in b if x <= threshold}
+    return len(aa & bb) / max(1, len(aa | bb))
+
+
+DUPLICATE_THRESHOLD = 0.4
+
+
 def duplicates(doc_id: str):
     with connect() as con:
         current = con.execute('SELECT * FROM documents WHERE id=?', (doc_id,)).fetchone()
-        if current is None:
+        if current is None or current['archived'] or current['status'] not in ('ready', 'partial'):
             return []
-        other = con.execute('SELECT * FROM documents WHERE id!=?', (doc_id,)).fetchall()
+        other = con.execute("""SELECT * FROM documents WHERE id!=? AND archived=0
+                               AND status IN ('ready','partial')""", (doc_id,)).fetchall()
     a = set(json.loads(current['signature']))
     found = []
     for row in other:
-        b = set(json.loads(row['signature']))
-        if not a or not b:
-            continue
-        # Bottom-k sketch estimate using the shared sample threshold.
-        threshold = min(max(a), max(b))
-        aa, bb = {x for x in a if x <= threshold}, {x for x in b if x <= threshold}
-        similarity = len(aa & bb) / max(1, len(aa | bb))
-        if similarity < 0.4:
+        similarity = body_similarity(a, set(json.loads(row['signature'])))
+        if similarity < DUPLICATE_THRESHOLD:
             continue
         recommendation = '正文高度相似，请比较后选择保留版本。'
-        if row['arxiv_id'] and row['arxiv_id'] == current['arxiv_id'] and row['version'] and current['version']:
+        if (row['arxiv_id'] and row['arxiv_id'] == current['arxiv_id'] and
+                row['version'] and current['version'] and row['version'] != current['version']):
             recommendation = '已有版本较新，建议保留已有版本。' if row['version'] > current['version'] else '当前版本较新，可保留当前版本。'
         found.append({'document_id': row['id'], 'title': row['title'], 'filename': row['filename'],
-                      'similarity': round(similarity, 3), 'method': 'body_word_shingles', 'recommendation': recommendation})
+                      'version': row['version'], 'similarity': round(similarity, 3),
+                      'method': 'body_word_shingles', 'recommendation': recommendation})
     return sorted(found, key=lambda x: -x['similarity'])

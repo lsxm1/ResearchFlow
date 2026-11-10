@@ -16,7 +16,7 @@ def topic_view(row):
     with connect() as con:
         ratings = {item['paper_id']: item['rating'] for item in con.execute(
             'SELECT paper_id,rating FROM topic_feedback WHERE topic_id=?', (data['id'],))}
-        library = set(words(' '.join(item['title'] for item in con.execute('SELECT title FROM documents'))))
+        library = set(words(' '.join(item['title'] for item in con.execute('SELECT title FROM documents WHERE archived=0'))))
     for paper in results:
         overlap = len(set(words(paper['title'])) & library)
         paper['rating'] = ratings.get(paper['id'], 0)

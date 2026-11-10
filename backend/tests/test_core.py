@@ -69,6 +69,41 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(response.json()['exact_duplicate'])
         self.assertEqual(response.json()['document']['id'], doc_id)
 
+    def test_version_choice_is_reversible_and_preserves_citation_links(self):
+        text = 'Transformer training uses multi-head attention and an encoder decoder architecture.'
+        versions = []
+        for version in (7, 1):
+            with pymupdf.open() as pdf:
+                page = pdf.new_page()
+                page.insert_text((50, 60), f'arXiv:1706.03762v{version}')
+                page.insert_text((50, 120), text)
+                content = pdf.tobytes()
+            upload = self.client.post('/api/documents', files={'file': ('renamed.pdf', content)})
+            doc_id = upload.raise_for_status().json()['document']['id']
+            result = wait_for(self.client, f'/api/documents/{doc_id}', 'status', {'ready', 'failed'})
+            self.assertEqual(result['version'], version)
+            versions.append((doc_id, content))
+        (new, _), (old, old_pdf) = versions
+        old_url = f'/api/documents/{old}'
+        pair = {'keep_id': new, 'archive_id': old}
+        path = '/api/documents/resolve-version'
+
+        unrelated = self.upload_ready()
+        self.assertEqual(self.client.post(path, json={**pair, 'archive_id': unrelated}).status_code, 409)
+        self.client.post(path, json=pair).raise_for_status()
+        self.client.post(path, json=pair).raise_for_status()
+        self.assertEqual(self.client.post(path, json={'keep_id': old, 'archive_id': new}).status_code, 409)
+        self.assertTrue(self.client.get(old_url).json()['archived'])
+        self.assertEqual(self.client.get(old_url + '/file').content, old_pdf)
+        self.assertIn(text, self.client.get(old_url + '/pages/1').json()['text'])
+        self.assertEqual(self.client.get(f'/api/documents/{new}').json()['duplicates'], [])
+        self.assertEqual(self.client.post('/api/tasks', json={'question': 'Training setup?', 'document_ids': [old]}).status_code, 409)
+
+        self.client.post(old_url + '/restore').raise_for_status()
+        self.assertFalse(self.client.get(old_url).json()['archived'])
+        self.client.post(path, json={'keep_id': old, 'archive_id': new}).raise_for_status()
+        self.assertTrue(self.client.get(f'/api/documents/{new}').json()['archived'])
+
     def test_scanned_pdf_cannot_silently_answer_without_ocr(self):
         response = self.client.post('/api/documents', files={'file': ('scan.pdf', self.scan, 'application/pdf')})
         doc_id = response.json()['document']['id']

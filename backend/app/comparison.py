@@ -37,7 +37,8 @@ def hardware_excerpt(text):
 def local_paper(target: str):
     identifier = arxiv.paper_id(target)
     with connect() as con:
-        rows = con.execute("SELECT * FROM documents WHERE status IN ('ready','partial') ORDER BY version DESC, created_at DESC").fetchall()
+        rows = con.execute("""SELECT * FROM documents WHERE archived=0 AND status IN ('ready','partial')
+                              ORDER BY version DESC, created_at DESC""").fetchall()
     for row in rows:
         if identifier:
             versioned = f"{row['arxiv_id']}v{row['version']}"
@@ -240,6 +241,8 @@ def execute(task_id: str, target: str):
                 event(task_id, 'download_pdf', f'下载 arXiv:{identifier} 并开始解析。')
                 target_paper = wait_for_document(arxiv.download_pdf(client, identifier, title))
                 event(task_id, 'parse_pdf', f'已解析 {target_paper["page_count"]} 页。')
+        if target_paper['archived']:
+            raise ValueError('目标论文是已归档的版本。请在文献库恢复后重试。')
         if base['id'] == target_paper['id']:
             raise ValueError('目标已是当前选中的论文，请选择另一篇。')
         papers = [base, target_paper]
