@@ -189,6 +189,18 @@ class CoreTests(unittest.TestCase):
                      'cells': [table['cells'][0], [[0, 30, 20, 40], None, None]]}
         self.assertIsNone(table_maximum(ambiguous, prose))
 
+    def test_parameter_table_keeps_only_owned_models_in_a_mixed_comparison(self):
+        from app.parameter_tables import table_maximum
+
+        table = {'caption': 'Table 2: Comparison of ModelX and other models.',
+                 'rows': [['Model', 'Params'], ['Baseline', '360M'], ['ModelXL', '380M'],
+                          ['ModelX-small', '14M'], ['ModelX-large', '335M']],
+                 'cells': [[None, [30, 10 * row, 50, 10 * row + 10]] for row in range(5)]}
+        self.assertIsNone(table_maximum(table, None))
+        value, quote, bbox, location, _ = table_maximum(table, None, 'ModelX')
+        self.assertEqual((value, quote, bbox), (335_000_000, '335M', table['cells'][4][1]))
+        self.assertEqual((location['model'], location['row'], location['column']), ('ModelX-large', 5, 2))
+
     def test_multi_paper_comparison_keeps_measurements_in_scope(self):
         papers = (
             'We train for 20 epochs on contiguous sequences of 256 tokens. A cited baseline has 900 million parameters.',
@@ -218,6 +230,24 @@ class CoreTests(unittest.TestCase):
         self.assertEqual([evidence[item['source_id']]['document_id'] for item in context['citations']], ids)
         self.assertIn('训练序列长度 256 tokens', context['text'])
         self.assertIn('窗口相差最多 512 tokens', context['text'])
+
+    def test_parameter_claims_keep_model_ownership_and_units(self):
+        from app.comparison_facts import FACETS, identify
+
+        facet = FACETS['parameters'][0]
+        cases = (
+            ('Our largest (11 billion parameter) model had the best results.', 11_000_000_000, '11 B'),
+            ('We have built a larger version of ModelX with 1.5 billion parameters. '
+             'A cited baseline uses 11B parameters.', 1_500_000_000, '1.5 B'),
+            ('We design two sparse models, one with 395 billion and 1.6 trillion parameters, respectively. '
+             'The smaller one uses 6.3T FLOPs per sequence.', 1_600_000_000_000, '1.6 T'),
+        )
+        for excerpt, value, display in cases:
+            with self.subTest(excerpt=excerpt):
+                fact = identify(excerpt, facet)
+                self.assertEqual((fact['value'], fact['display']), (value, display))
+        self.assertIsNone(identify('We design two baseline models, one with 395B and 1.6T parameters.', facet))
+        self.assertIsNone(identify('We design two models, one with 395B and 1.6T FLOPs per sequence.', facet))
 
     def test_natural_hardware_question_reaches_actual_gpu_evidence(self):
         doc_id = self.upload_ready()

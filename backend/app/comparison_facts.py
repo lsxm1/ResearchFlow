@@ -24,13 +24,15 @@ DERIVED_ENCODER = (
 )
 AMOUNT = r'\d[\d,]*(?:\.\d+)?'
 TIME = rf'{AMOUNT}\s+(?:hours?|days?|minutes?)'
-PARAMETER_COUNT = rf'(?P<amount>{AMOUNT})\s*[-–]?\s*(?P<unit>million|billion|[mb])'
-MODEL_RANGE_START = rf'{AMOUNT}\s*(?:million|billion|[mb])(?:\s+parameters)?'
-SERIES_COUNT = rf'{AMOUNT}\s*(?:million|billion|[mb])'
+PARAMETER_SCALES = {'trillion': 10**12, 'billion': 10**9, 'million': 10**6,
+                    't': 10**12, 'b': 10**9, 'm': 10**6}
+PARAMETER_UNIT = '|'.join(PARAMETER_SCALES)
+PARAMETER_COUNT = rf'(?P<amount>{AMOUNT})\s*[-–]?\s*(?P<unit>{PARAMETER_UNIT})'
+SERIES_COUNT = rf'{AMOUNT}\s*(?:{PARAMETER_UNIT})'
+MODEL_RANGE_START = rf'{SERIES_COUNT}(?:\s+parameters)?'
 MODEL_SERIES = rf'(?P<series>{SERIES_COUNT}(?:\s*(?:,\s*(?:and\s+)?|and\s+){SERIES_COUNT})+)'
 MODEL_ANNOUNCEMENT = r'\bwe (?:train(?:ed)?|introduce|present|(?:develop and )?release)\b'
 TOKENS = r'(?P<amount>\d{1,3}(?:,\d{3})+|\d+)'
-PARAMETER_SCALES = {'b': 10**9, 'billion': 10**9, 'm': 10**6, 'million': 10**6}
 FACETS = {
     'architecture': (
         Facet('encoder', '编码器设计',
@@ -66,8 +68,11 @@ FACETS = {
         Facet('parameter_count', '论文报告的参数量',
               'we train largest model parameters trainable billion million parameter transformer',
               'model size largest model parameter count billion total parameters',
-              (('parameter_count', rf'\bour (?:largest )?model\b[^.!?]{{0,65}}\b(?:is a|has|with)\s+{PARAMETER_COUNT}[- ]+parameters?\b'),
+              (('parameter_count', rf'\bour largest\s*\({PARAMETER_COUNT}[- ]+parameters?\)\s+model\b'),
+               ('parameter_count', rf'\bour (?:largest )?model\b[^.!?]{{0,65}}\b(?:is a|has|with)\s+{PARAMETER_COUNT}[- ]+parameters?\b'),
                ('parameter_count', rf'\bwe (?:train(?:ed)?|introduce|present)\b[^.!?]{{0,120}}\bwith {PARAMETER_COUNT}\s+parameters\b'),
+               ('parameter_count', rf'\bwe (?:have )?(?:build|built)\s+a larger version of\b'
+                rf'[^.!?]{{0,70}}\bwith {PARAMETER_COUNT}\s+parameters\b'),
                ('parameter_count', rf'{MODEL_ANNOUNCEMENT}[^.!?]{{0,230}}'
                 rf'\b(?:ranging(?: in (?:size|scale))? from|from) {MODEL_RANGE_START} to {PARAMETER_COUNT}\s+parameters\b'),
                ('parameter_count', rf'\bwe (?:introduce|present|release|train)\s+(?!(?:the|a|an|results|models?)\b)'
@@ -75,7 +80,10 @@ FACETS = {
                ('parameter_count', rf'\bwe (?:introduce|present|release|train)\b[^.!?]{{0,75}}'
                 rf'\b(?:series|family|suite)\s*:\s*{MODEL_SERIES}\s+parameters?\b'),
                ('parameter_count', rf'{MODEL_ANNOUNCEMENT}\s+\w+ sizes of (?:our )?models\s*'
-                rf'\({MODEL_SERIES}\s+parameters\)'))),
+                rf'\({MODEL_SERIES}\s+parameters\)'),
+               ('parameter_count', rf'\bwe (?:design(?:ed)?|build|built)\s+'
+                rf'(?![^,.!?]{{0,65}}\b(?:baselines?|reference|comparison)\b)'
+                rf'[^,.!?]{{0,65}}\bmodels,\s+(?:one )?with {MODEL_SERIES}\s+parameters\b'))),
     ),
     'context': (
         Facet('context_size', '上下文窗口或训练序列',
@@ -101,7 +109,7 @@ FACETS = {
 def parameter_measurement(amount, unit):
     value = Decimal(amount.replace(',', ''))
     scale = PARAMETER_SCALES[unit]
-    return {'value': int(value * scale), 'display': f'{value:g} {"B" if scale == 10**9 else "M"}',
+    return {'value': int(value * scale), 'display': f'{value:g} {unit[0].upper()}',
             'rounding_step': int(Decimal(10) ** value.as_tuple().exponent * scale)}
 
 

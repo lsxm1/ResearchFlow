@@ -281,7 +281,10 @@ def comparison_report(task, base_url):
         page = ' '.join(quote.splitlines())
         ocr = ' · OCR' if source.get('source') == 'ocr' else ''
         table = source.get('table')
-        cell = f" · 表格第 {table['row']} 行第 {table['column']} 列（{table['heading']}）" if table else ''
+        cell = ''
+        if table:
+            heading = ' · '.join(filter(None, (table.get('model'), table['heading'])))
+            cell = f" · 表格第 {table['row']} 行第 {table['column']} 列（{heading}）"
         return f"{page} [{source['title']} · 第 {source['page']} 页{cell}{ocr}]({base_url}{source['file_url']})"
 
     lines = ['# ResearchFlow 研究报告', '', '## 研究问题', task['question'], '', '## 论文',

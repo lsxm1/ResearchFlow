@@ -5,7 +5,7 @@ import { Discovery, Graph, Reading, Writing } from './ResearchTools';
 import './style.css';
 
 type Paper = {id: string; title: string; filename: string; status: string; page_count: number; processed_pages: number; text_pages: number; file_url: string; error?: string; version?: number; archived: boolean};
-type Evidence = {id: string; document_id: string; title: string; filename: string; page: number; text: string; bbox: number[]; score: number; file_url: string; source?: 'native' | 'ocr'; table?: {caption: string; row: number; column: number; heading: string}};
+type Evidence = {id: string; document_id: string; title: string; filename: string; page: number; text: string; bbox: number[]; score: number; file_url: string; source?: 'native' | 'ocr'; table?: {caption: string; row: number; column: number; heading: string; model?: string}};
 type Citation = {source_id: string; quote: string};
 type ComparisonExcerpt = {label: string; display?: string; source_id?: string; quote?: string; searched_queries: string[]};
 type ComparisonCell = {document_id: string; status: 'missing' | 'candidate' | 'cited_summary' | 'verified_excerpt' | 'partial'; source_id?: string; quote?: string; text?: string; searched_queries?: string[]; excerpts?: ComparisonExcerpt[]};
@@ -52,7 +52,7 @@ function SourceExcerpt({source, quote, openEvidence, title}: {source: Evidence; 
       {title && `${title} · `}第 {source.page} 页{table ? ` · 表格第 ${table.row} 行第 ${table.column} 列` : '原文'} ↗
     </button>
     <details><summary>{table ? '查看表格证据' : source.source === 'ocr' ? '查看 OCR 引句' : '查看引句'}</summary>
-      {table && <p>{table.caption}</p>}<p>{table && `${table.heading} · `}{quote}</p>
+      {table && <p>{table.caption}</p>}<p>{table?.model && `${table.model} · `}{table && `${table.heading} · `}{quote}</p>
     </details>
   </div>;
 }

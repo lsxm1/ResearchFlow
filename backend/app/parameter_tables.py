@@ -5,16 +5,15 @@ import json
 import logging
 import re
 
-from .comparison_facts import PARAMETER_SCALES
+from .comparison_facts import PARAMETER_SCALES, PARAMETER_UNIT
 from .db import connect
 from .documents import PDF_POOL
 from .library_tools import parameter_table_pages
 
 log = logging.getLogger(__name__)
 HEADER = r'(?:#\s*|total\s+(?:number of\s+)?|number of\s+)?(?:parameters|params|nparams)'
-UNIT = r'billion|million|b|m'
-PARAMETER_HEADER = re.compile(rf'{HEADER}(?:\s*\((?P<unit>{UNIT})\))?', re.I)
-COUNT = re.compile(rf'(?P<amount>(?:\d{{1,3}}(?:,\d{{3}})+|\d+)(?:\.\d+)?)(?:\s*(?P<unit>{UNIT}))?', re.I)
+PARAMETER_HEADER = re.compile(rf'{HEADER}(?:\s*\((?P<unit>{PARAMETER_UNIT})\))?', re.I)
+COUNT = re.compile(rf'(?P<amount>(?:\d{{1,3}}(?:,\d{{3}})+|\d+)(?:\.\d+)?)(?:\s*(?P<unit>{PARAMETER_UNIT}))?', re.I)
 
 
 def candidate_pages(doc_id):
@@ -26,6 +25,28 @@ def candidate_pages(doc_id):
         ranked = [(not any(PARAMETER_HEADER.fullmatch(line.strip()) for line in row['text'].splitlines()), row['page'])
                   for row in rows]
     return [page for _, page in sorted(ranked)[:6]]
+
+
+def owned_model_family(paper):
+    title = re.match(r'([a-z][a-z0-9-]{2,29})\s*:', paper['title'], re.I)
+    if not title:
+        return None
+    family = title[1]
+    naming = re.compile(rf'\bwe (?:call|name) our (?:approach|model|method)\s+{re.escape(family)}(?:\d{{1,2}})?(?![\w-])',
+                        re.I)
+    with connect() as con:
+        pages = con.execute("SELECT text FROM pages WHERE document_id=? AND source='native' AND page<=4",
+                            (paper['id'],)).fetchall()
+    return family if any(naming.search(page['text']) for page in pages) else None
+
+
+def model_rows(rows, family):
+    columns = [i for i, heading in enumerate(rows[0]) if (heading or '').strip().casefold() == 'model']
+    if len(columns) != 1:
+        return None
+    column = columns[0]
+    variant = re.compile(rf'{re.escape(family)}(?:[-‐‑][a-z0-9.]+)*', re.I)
+    return column, [i for i, row in enumerate(rows[1:], 1) if variant.fullmatch((row[column] or '').strip())]
 
 
 def axis_maximum(table, coordinates, header):
@@ -46,21 +67,27 @@ def axis_maximum(table, coordinates, header):
     return max(values, key=lambda item: item[0], default=None)
 
 
-def table_maximum(table, prose):
+def table_maximum(table, prose, family=None):
     caption = ' '.join(table['caption'].split())
-    if not re.search(r'\b(?:architecture|architectural|hyper[- ]?parameters|model sizes?|key model parameters)\b', caption, re.I):
-        return None
-    if re.search(r'\b(?:benchmark|baselines?|comparison|accuracy|performance)\b', caption, re.I):
-        return None
-    if prose is None and not re.search(r'\bour\b.{0,40}\bmodels?\b|\bmodels? (?:used|trained) in this work\b', caption, re.I):
-        return None
     rows = table['rows']
     if len(rows) < 2:
         return None
-    axes = (
-        ('column', rows[0], lambda column: ((row, column) for row in range(1, len(rows)))),
-        ('row', [row[0] for row in rows], lambda row: ((row, column) for column in range(1, len(rows[row])))),
-    )
+    comparison = re.search(r'\b(?:benchmark|baselines?|comparison|accuracy|performance)\b', caption, re.I)
+    if comparison:
+        if not family or not re.search(rf'(?<!\w){re.escape(family)}(?!\w)', caption, re.I):
+            return None
+        if re.search(r'\bablations?\b', caption, re.I) or not (scope := model_rows(rows, family)):
+            return None
+        model_column, data_rows = scope
+    else:
+        if not re.search(r'\b(?:architecture|architectural|hyper[- ]?parameters|model sizes?|key model parameters)\b', caption, re.I):
+            return None
+        if prose is None and not re.search(r'\bour\b.{0,40}\bmodels?\b|\bmodels? (?:used|trained) in this work\b', caption, re.I):
+            return None
+        data_rows = range(1, len(rows))
+    axes = [('column', rows[0], lambda column: ((row, column) for row in data_rows))]
+    if not comparison:
+        axes.append(('row', [row[0] for row in rows], lambda row: ((row, col) for col in range(1, len(rows[row])))))
     matches = []
     for orientation, headings, coordinates in axes:
         headers = [(index, heading, match) for index, heading in enumerate(headings)
@@ -75,6 +102,8 @@ def table_maximum(table, prose):
     if prose and abs(value - prose['value']) * 2 > prose['rounding_step']:
         return None
     location = {'caption': caption, 'row': row + 1, 'column': column + 1, 'heading': heading}
+    if comparison:
+        location['model'] = rows[row][model_column].strip()
     return value, cell, bbox, location, orientation
 
 
@@ -89,11 +118,18 @@ def find_parameter_cell(paper, prose):
         future.cancel()
         log.warning('Parameter table parsing failed for %s', paper['id'], exc_info=True)
         return None
+    family = owned_model_family(paper)
     matches = [(page, *match) for page, tables in tables_by_page for table in tables
-               if (match := table_maximum(table, prose))]
-    if not matches or len({item[1] for item in matches}) != 1:
+               if (match := table_maximum(table, prose, family))]
+    if not matches:
         return None
-    page, value, quote, bbox, table, orientation = matches[0]
+    configs = [item for item in matches if 'model' not in item[4]]
+    if len({item[1] for item in configs}) > 1:
+        return None
+    page, value, quote, bbox, table, orientation = configs[0] if configs else max(matches, key=lambda item: item[1])
+    model = table.get('model')
+    if model and any(item[4]['model'].casefold() == model.casefold() and item[1] != value for item in matches):
+        return None
     doc_id = paper['id']
     location = json.dumps([page, bbox, table, quote], ensure_ascii=False, sort_keys=True)
     digest = hashlib.sha256(location.encode()).hexdigest()[:20]
@@ -105,4 +141,6 @@ def find_parameter_cell(paper, prose):
                 'page': page, 'text': quote, 'bbox': bbox, 'score': 0, 'source': 'native', 'table': table,
                 'file_url': f'/api/documents/{doc_id}/file#page={page}'}
     label = '配置表报告的最大模型规模' if orientation == 'row' else '模型配置表最大参数量'
+    if model:
+        label = '本论文模型在对照表中的最大参数量'
     return evidence, {'kind': 'parameter_count', 'label': label, 'value': value, 'display': quote}
