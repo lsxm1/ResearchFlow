@@ -31,7 +31,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1 -LocalModel
 
 换电脑时，运行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\setup-ocr.ps1` 下载约 4 MB 英文识别数据。本机已准备好。使用自定义数据目录时，可用 `RF_TESSDATA_DIR` 指向包含 `eng.traineddata` 的目录。
 
-本地模式绑定回环地址。`docker compose up --build` 提供同源服务的容器部署配置。公开评审部署需配置 HTTPS 反代及模型服务，可设置 `RF_DEMO_PASSWORD` 并以 `reviewer` 登录。Docker 配置尚待在目标主机实构建和上线核验。
+本地模式绑定回环地址。`docker compose up --build` 提供同源服务的容器部署配置。公开评审部署使用 HTTPS 反向代理，设置 `RF_DEMO_PASSWORD` 后以 `reviewer` 登录。模型端点按需配置。已通过本机带口令的空库验收，Docker 构建和公网访问仍需在目标主机核验。
 
 ## 第一次体验
 
@@ -92,6 +92,8 @@ samples/           绘图用CSV样例
 $samples = Resolve-Path '..\演示样本'
 .\.venv\Scripts\python.exe .\backend\review_smoke.py "$samples\1706.03762v7.pdf" --expect-empty --bert-fixture "$samples\1810.04805v2.pdf" --gpt-fixtures $samples
 ~~~
+
+开启评审口令时，在运行验收脚本的终端设置 `RF_REVIEW_PASSWORD` 为该口令。可用 `--url` 指定正在验收的 HTTPS 地址。
 
 只跑离线回归和前端编译时，使用下列命令。
 
