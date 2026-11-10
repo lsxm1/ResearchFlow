@@ -1,5 +1,6 @@
 """Recognize explicit comparison facts while retaining their verbatim source blocks."""
 from dataclasses import dataclass
+from decimal import Decimal
 import re
 import unicodedata
 
@@ -23,6 +24,8 @@ DERIVED_ENCODER = (
 )
 AMOUNT = r'\d[\d,]*(?:\.\d+)?'
 TIME = rf'{AMOUNT}\s+(?:hours?|days?|minutes?)'
+PARAMETER_COUNT = rf'(?P<amount>{AMOUNT})\s*(?P<unit>million|billion|[mb])'
+TOKENS = r'(?P<amount>\d{1,3}(?:,\d{3})+|\d+)'
 FACETS = {
     'architecture': (
         Facet('encoder', '编码器设计',
@@ -54,19 +57,105 @@ FACETS = {
               (('elapsed_time', rf'\b(?:pre[- ]?training|training) took (?:about )?{TIME}\b|'
                 rf'\btrained\b[^.!?]{{0,140}}\bsteps(?: or |\s*\(){TIME}\b'),)),
     ),
+    'parameters': (
+        Facet('parameter_count', '论文报告的参数量',
+              'we train largest model parameters trainable billion million parameter transformer',
+              'model size largest model parameter count billion total parameters',
+              (('parameter_count', rf'\bour (?:largest )?model\b[^.!?]{{0,65}}\b(?:is a|has|with)\s+{PARAMETER_COUNT}[- ]+parameters?\b'),
+               ('parameter_count', rf'\bwe (?:train(?:ed)?|introduce|present)\b[^.!?]{{0,120}}\bwith {PARAMETER_COUNT}\s+parameters\b'),
+               ('parameter_count', rf'\bwe (?:train|trained)\b[^.!?]{{0,175}}\bfrom {AMOUNT}\s+million parameters to {PARAMETER_COUNT}\s+parameters\b'))),
+    ),
+    'context': (
+        Facet('context_size', '上下文窗口或训练序列',
+              'context window context size nctx tokens all models sequences training',
+              'model context window length maximum tokens sampled contiguous sequences',
+              (('context_window', rf'\b(?:all (?:our )?models use|we (?:also )?(?:use|increase))\b[^.!?]{{0,85}}'
+                rf'\bcontext (?:window|size|length)\s+(?:of|to|from \d[\d,]* to)\s+(?:n\s*ctx\s*=\s*)?{TOKENS}\s+tokens?\b'),
+               ('context_window', rf'\bmodel[’\x27]s context window\s*\(n\s*ctx\s*=\s*{TOKENS}\)'),
+               ('training_sequence', rf'\bwe (?:pre[- ]?)?train(?:ed)?\b[^.!?]{{0,150}}\bsequences? of {TOKENS}\s+tokens?\b'))),
+    ),
+    'layer_norm': (
+        Facet('norm_position', '层归一化放置方式',
+              'layer normalization moved input sub-block pre-normalization same architecture',
+              'layer norm pre-normalization input sub-block final self-attention residual',
+              (('pre_norm_final', r'\blayer normalization\b.{0,95}\bmoved to the input of each sub-block\b'
+                                  r'.{0,145}\badditional layer normalization was added after the final self-?attention block\b'),
+               ('pre_norm', r'\bwe use the same model and architecture\b.{0,125}\bpre[- ]?normalization\b'),
+               ('pre_norm', r'\b(?:we|our model) (?:use|uses|apply|applies) (?:a )?pre[- ]?(?:layer )?norm(?:alization)?\b'))),
+    ),
 }
 
 
 def identify(text, facet):
     text = re.sub(r'(?<=\w)-[ \t]*\r?\n[ \t]*(?=\w)', '', text)
     normalized = ' '.join(unicodedata.normalize('NFKC', text).split()).casefold()
-    return next((kind for kind, pattern in facet.patterns if re.search(pattern, normalized)), None)
+    for kind, pattern in facet.patterns:
+        match = re.search(pattern, normalized)
+        if not match:
+            continue
+        facts = {'kind': kind}
+        if kind in FACT_LABELS:
+            facts['label'] = FACT_LABELS[kind]
+        if amount := match.groupdict().get('amount'):
+            value = Decimal(amount.replace(',', ''))
+            unit = match.groupdict().get('unit')
+            if unit:
+                scale = 10**9 if unit in ('b', 'billion') else 10**6
+                facts.update(value=int(value * scale), display=f'{value:g} {"B" if scale == 10**9 else "M"}')
+            else:
+                facts.update(value=int(value), display=f'{int(value):,} tokens')
+        return facts
+    return None
+
+
+FACT_LABELS = {
+    'parameter_count': '报告参数量',
+    'context_window': '上下文窗口',
+    'training_sequence': '训练序列长度',
+    'pre_norm': '采用预归一化',
+    'pre_norm_final': '子块输入处归一化，最后一个自注意力块之后另有归一化',
+}
+
+
+def measured_findings(papers, rows):
+    findings = []
+    for row in rows:
+        key = row['key']
+        if key not in ('parameters', 'context', 'layer_norm'):
+            continue
+        excerpts, observations, missing = [], [], []
+        for paper, cell in zip(papers, row['cells'], strict=True):
+            title = f"「{paper['title']}」"
+            item = cell['excerpts'][0]
+            if item['status'] != 'verified_excerpt':
+                missing.append(title)
+                continue
+            excerpts.append(item)
+            observations.append(f"{title}{FACT_LABELS[item['kind']]} {item.get('display', '')}".rstrip())
+        if len(excerpts) < 2:
+            continue
+        text = '，'.join(observations) + '。'
+        windows = [item['value'] for item in excerpts if item['kind'] == 'context_window']
+        if len(windows) >= 2 and max(windows) > min(windows):
+            text += f'已明确报告的窗口相差最多 {max(windows) - min(windows):,} tokens。'
+        if any(item['kind'] == 'training_sequence' for item in excerpts):
+            text += '训练序列长度与模型的上下文窗口分别列示。'
+        if key == 'parameters':
+            counts = [item['value'] for item in excerpts]
+            if max(counts) > min(counts) > 0:
+                text += f'已核对数值的最大值约为最小值的 {max(counts) / min(counts):.1f} 倍。'
+        if missing:
+            text += '、'.join(missing) + '未检得可直接核对的对应证据。'
+        findings.append(finding(row['label'] + '对照', text, excerpts))
+    return findings
 
 
 def grounded_findings(papers, rows):
-    """State only comparisons whose required facts were found on both sides."""
+    """Build findings from verified excerpts and keep gaps in the comparison."""
     by_field = {row['key']: row['cells'] for row in rows}
-    findings = []
+    findings = measured_findings(papers, rows)
+    if len(papers) != 2:
+        return findings
     for original, derivative in ((0, 1), (1, 0)):
         if papers[original]['arxiv_id'] != '1706.03762':
             continue

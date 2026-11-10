@@ -159,6 +159,36 @@ class CoreTests(unittest.TestCase):
         wrong_page = self.client.get(f'/api/read/{target}/pages/1', params={'evidence_id': duration['id']}).json()
         self.assertIsNone(wrong_page['highlight'])
 
+    def test_multi_paper_comparison_keeps_measurements_in_scope(self):
+        papers = (
+            'We train for 20 epochs on contiguous sequences of 256 tokens. A cited baseline has 900 million parameters.',
+            'Our largest model is a 20 million parameter transformer. All models use a context window of 512 tokens.',
+            'Our model has 3 billion parameters. We increase the context size from 512 to 1024 tokens.',
+        )
+        ids = []
+        for index, text in enumerate(papers):
+            with pymupdf.open() as pdf:
+                pdf.set_metadata({'title': f'Sample paper {index + 1}'})
+                pdf.new_page().insert_textbox((50, 55, 550, 200), text)
+                upload = self.client.post('/api/documents', files={'file': (f'sample-{index}.pdf', pdf.tobytes())})
+            doc_id = upload.raise_for_status().json()['document']['id']
+            self.assertEqual(wait_for(self.client, f'/api/documents/{doc_id}', 'status', {'ready', 'failed'})['status'], 'ready')
+            ids.append(doc_id)
+        body = {'question': '比较参数量和上下文窗口。', 'document_ids': ids}
+        self.assertEqual(self.client.post('/api/tasks/compare', json={**body, 'target_paper': '1234.56789'}).status_code, 422)
+        job = self.client.post('/api/tasks/compare', json=body).raise_for_status().json()
+        task = wait_for(self.client, f"/api/tasks/{job['id']}", 'status', {'completed', 'failed'})
+        self.assertEqual(task['status'], 'completed')
+        self.assertEqual(task['document_ids'], ids)
+        evidence = {item['id']: item for item in task['result']['evidence']}
+        size, context = task['result']['comparison']['findings']
+        self.assertEqual([evidence[item['source_id']]['document_id'] for item in size['citations']], ids[1:])
+        self.assertIn('150.0 倍', size['text'])
+        self.assertIn('未检得', size['text'])
+        self.assertEqual([evidence[item['source_id']]['document_id'] for item in context['citations']], ids)
+        self.assertIn('训练序列长度 256 tokens', context['text'])
+        self.assertIn('窗口相差最多 512 tokens', context['text'])
+
     def test_natural_hardware_question_reaches_actual_gpu_evidence(self):
         doc_id = self.upload_ready()
         result = self.client.post('/api/tasks', json={'question':'What hardware and training schedule were used?', 'document_ids':[doc_id]})

@@ -7,7 +7,7 @@ import './style.css';
 type Paper = {id: string; title: string; filename: string; status: string; page_count: number; processed_pages: number; text_pages: number; file_url: string; error?: string; version?: number; archived: boolean};
 type Evidence = {id: string; document_id: string; title: string; filename: string; page: number; text: string; bbox: number[]; score: number; file_url: string; source?: 'native' | 'ocr'};
 type Citation = {source_id: string; quote: string};
-type ComparisonExcerpt = {label: string; source_id?: string; quote?: string; searched_queries: string[]};
+type ComparisonExcerpt = {label: string; display?: string; source_id?: string; quote?: string; searched_queries: string[]};
 type ComparisonCell = {document_id: string; status: 'missing' | 'candidate' | 'cited_summary' | 'verified_excerpt' | 'partial'; source_id?: string; quote?: string; text?: string; searched_queries?: string[]; excerpts?: ComparisonExcerpt[]};
 type Comparison = {
   papers: {id: string; title: string; filename: string}[];
@@ -68,8 +68,9 @@ function ComparisonTable({table, evidence, openEvidence}: {table: Comparison; ev
       </article>)}
     </div>}
     <div className="output-title"><h3>分项对比证据</h3><span>{table.papers.length} 篇</span></div>
+    {table.papers.length > 2 && <p className="result-note">左右滚动可查看所有论文。</p>}
     <div className="comparison-scroll">
-      <table className="comparison-table">
+      <table className="comparison-table" data-wide={table.papers.length > 2}>
         <thead><tr><th scope="col">字段</th>{table.papers.map(paper => <th scope="col" key={paper.id}>{paper.title}</th>)}</tr></thead>
         <tbody>{table.rows.map(row => <tr key={row.key}>
           <th scope="row">{row.label}</th>
@@ -79,7 +80,7 @@ function ComparisonTable({table, evidence, openEvidence}: {table: Comparison; ev
               {cell.excerpts?.map(excerpt => {
                 const cited = evidence.find(item => item.id === excerpt.source_id);
                 return <div className="facet-excerpt" key={excerpt.label}>
-                  <strong>{excerpt.label}</strong>
+                  <strong>{excerpt.label}{excerpt.display && ` · ${excerpt.display}`}</strong>
                   {cited ? <SourceExcerpt source={cited} quote={excerpt.quote} openEvidence={openEvidence}/>
                     : <p className="result-note">未检得足够证据</p>}
                   {excerpt.searched_queries.length > 1 && <details><summary>查看补查</summary>
@@ -219,7 +220,8 @@ function App() {
     try {
       const response = await api<{id: string}>(compare ? '/tasks/compare' : '/tasks', {
         method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({question, document_ids: activeSelection, ...(compare ? {target_paper: targetPaper.trim()} : {})}),
+        body: JSON.stringify({question, document_ids: activeSelection,
+          ...(compare && activeSelection.length === 1 ? {target_paper: targetPaper.trim()} : {})}),
       });
       setTaskId(response.id);
       setTasks(await api<Task[]>('/tasks'));
@@ -346,14 +348,21 @@ function App() {
           <div className="task-compose"><label htmlFor="question">你希望从论文中找到什么？</label><textarea id="question" value={question} onChange={e => setQuestion(e.target.value)} maxLength={2000}/><div className="examples"><button onClick={() => setQuestion('What hardware and training schedule were used?')}>训练硬件</button><button onClick={() => setQuestion('What are the Adam beta and learning rate hyperparameters?')}>超参数</button><button onClick={() => setQuestion('Compare the BLEU results for English to German and English to French.')}>实验指标</button></div><button className="primary" onClick={() => void submit()} disabled={!health || !eligibleCount || question.trim().length < 2 || submitting}>{submitting ? '提交中…' : health?.model_mode === 'configured' ? '执行研究任务 →' : '检索原文证据 →'}</button><p className="compose-note">{health?.model_mode === 'configured' ? '使用后端配置的模型；引用校验通过仍需人工核对。' : '当前不生成AI答案，不消耗大模型API额度。'}</p></div>
           <details className="task-compose compare-form">
             <summary>补齐论文并对比</summary>
-            <p className="compose-note">勾选一篇已入库论文。在上方问题中写下另一篇论文和对比意图。可使用 BERT、arXiv 编号或《完整标题》。</p>
-            <label htmlFor="target-paper">目标论文（可选，优先使用此栏）</label>
-            <input id="target-paper" value={targetPaper} onChange={e => setTargetPaper(e.target.value)} maxLength={240}/>
+            <p className="compose-note">可勾选 2–4 篇直接对比。只勾选一篇时，系统会按 BERT、arXiv 编号或《完整标题》补齐目标论文。</p>
+            {eligibleCount <= 1 && <>
+              <label htmlFor="target-paper">目标论文（可选，优先使用此栏）</label>
+              <input id="target-paper" value={targetPaper} onChange={e => setTargetPaper(e.target.value)} maxLength={240}/>
+            </>}
             <div className="examples"><button onClick={() => {
               setTargetPaper('');
               setQuestion('BERT 继承了 Transformer Encoder 的什么，又改了什么？');
-            }}>填入 BERT 架构示例</button></div>
-            <button className="primary" onClick={() => void submit(true)} disabled={!health || eligibleCount !== 1 || question.trim().length < 2 || submitting}>补齐并对比 →</button>
+            }} disabled={eligibleCount > 1}>填入 BERT 架构示例</button>
+              {eligibleCount === 3 && <button onClick={() => setQuestion('比较 GPT-1、GPT-2、GPT-3 的参数量、上下文窗口和 LN 位置。')}>填入 GPT 三代示例</button>}
+            </div>
+            <button className="primary" onClick={() => void submit(true)}
+              disabled={!health || eligibleCount < 1 || eligibleCount > 4 || question.trim().length < 2 || submitting}>
+              {eligibleCount > 1 ? '比较所选论文 →' : '补齐并对比 →'}
+            </button>
           </details>
           {tasks.length > 0 && <div className="task-history"><label htmlFor="history">任务记录</label><select id="history" value={taskId} onChange={e => setTaskId(e.target.value)}><option value="">选择已保存的任务</option>{tasks.map(t => <option key={t.id} value={t.id}>{t.question.slice(0,55)} · {t.status}</option>)}</select></div>}
           <div className="task-output" aria-live="polite">{task ? <>

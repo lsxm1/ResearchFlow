@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from . import agent, comparison, discovery, documents, workspace
+from .compare_plan import MAX_PAPERS
 from .config import MAX_UPLOAD, ROOT, UPLOADS, model_config
 from .db import connect, document, init_db, task
 
@@ -228,8 +229,11 @@ def create_task(body: TaskRequest):
 
 @app.post('/api/tasks/compare', status_code=202)
 def create_comparison(body: CompareRequest):
-    if len(set(body.document_ids)) != 1:
-        raise HTTPException(422, '请选择一篇已入库论文作为对比起点。')
+    count = len(set(body.document_ids))
+    if count > MAX_PAPERS:
+        raise HTTPException(422, f'一次最多比较 {MAX_PAPERS} 篇已入库论文。')
+    if count > 1 and body.target_paper.strip():
+        raise HTTPException(422, '多篇对比直接使用勾选的论文，请清空目标论文栏。')
     if len(body.question.strip()) < 2:
         raise HTTPException(422, '请填写研究问题。')
     return enqueue_task(body, comparison.execute, body.target_paper.strip())

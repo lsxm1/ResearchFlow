@@ -93,18 +93,28 @@ def find_facets(task_id, paper, key, model_query, evidence):
     for facet in FACETS[key]:
         query = f'{facet.query} {model_query}'.strip()
         item = {'label': facet.label, 'status': 'missing', 'searched_queries': [query]}
+        sequence = None
         for index, attempt in enumerate((query, facet.retry)):
             if index:
-                event(task_id, 'retry_evidence', f'{paper["filename"]} 的「{facet.label}」缺少可核对证据，补查。')
+                detail = '已找到训练序列，继续查找模型窗口。' if sequence else '缺少可核对证据，补查。'
+                event(task_id, 'retry_evidence', f'{paper["filename"]} 的「{facet.label}」{detail}')
                 item['searched_queries'].append(attempt)
             for source in retrieve(attempt, [paper['id']], limit=12):
-                kind = identify(source['text'], facet)
-                if kind:
-                    evidence[source['id']] = source
-                    item.update(kind=kind, status='verified_excerpt', source_id=source['id'], quote=source['text'].strip())
-                    break
+                facts = identify(source['text'], facet)
+                if not facts:
+                    continue
+                if facts['kind'] == 'training_sequence':
+                    sequence = sequence or (source, facts)
+                    continue
+                evidence[source['id']] = source
+                item.update(facts, status='verified_excerpt', source_id=source['id'], quote=source['text'].strip())
+                break
             if item['status'] == 'verified_excerpt':
                 break
+        if item['status'] == 'missing' and sequence:
+            source, facts = sequence
+            evidence[source['id']] = source
+            item.update(facts, status='verified_excerpt', source_id=source['id'], quote=source['text'].strip())
         excerpts.append(item)
     return excerpts
 
@@ -200,27 +210,51 @@ def summarize_cells(task_id, question, rows):
     return accepted
 
 
+def add_target(task_id, base, target):
+    target_paper = local_paper(target)
+    event(task_id, 'check_library', '复用已入库论文。' if target_paper else '目标论文尚未入库，将查找 arXiv。')
+    if target_paper is None:
+        with httpx.Client(timeout=httpx.Timeout(20, connect=8), trust_env=False) as client:
+            identifier = arxiv.paper_id(target)
+            title = None
+            if identifier is None:
+                event(task_id, 'search_arxiv', f'按标题检索：{target}')
+                identifier, title = arxiv.resolve_title(client, target)
+            event(task_id, 'download_pdf', f'下载 arXiv:{identifier} 并开始解析。')
+            target_paper = wait_for_document(arxiv.download_pdf(client, identifier, title))
+            event(task_id, 'parse_pdf', f'已解析 {target_paper["page_count"]} 页。')
+    if target_paper['archived']:
+        raise ValueError('目标论文是已归档的版本。请在文献库恢复后重试。')
+    if base['id'] == target_paper['id']:
+        raise ValueError('目标已是当前选中的论文，请选择另一篇。')
+    with connect() as con:
+        con.execute('UPDATE tasks SET document_ids=? WHERE id=?',
+                    (json.dumps([base['id'], target_paper['id']]), task_id))
+    return target_paper
+
+
 def execute(task_id: str, target: str):
     warnings = []
     try:
         with connect() as con:
             task = con.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone()
         agent.update(task_id, status='running')
-        base = wait_for_document(json.loads(task['document_ids'])[0])
+        papers = [wait_for_document(doc_id) for doc_id in json.loads(task['document_ids'])]
         config = model_config()
         use_model = config['mode'] == 'openai_compatible' and config['model'] and config['base_url']
         question = task['question']
-        target = target or target_from_question(question, base)
+        if len(papers) == 1:
+            target = target or target_from_question(question, papers[0])
         fields = requested_fields(question)
         queries = {}
         if use_model:
             try:
-                target, queries = plan_with_model(question, base, target)
+                target, queries = plan_with_model(question, papers, target)
                 event(task_id, 'plan_search', f'模型给出 {len(queries)} 个字段的检索词。')
             except Exception:
                 log.exception('Comparison model planning failed')
                 warnings.append('模型规划暂不可用，已使用问题中的字段和预设检索词。')
-        if not target:
+        if len(papers) == 1 and not target:
             raise ValueError('还无法确定另一篇论文。请在问题中写 arXiv 编号、用《》括住完整标题，或填写目标论文。')
         fields = fields or list(queries) or list(DEFAULT_FIELDS)
         if len(fields) > MAX_FIELDS:
@@ -228,31 +262,14 @@ def execute(task_id: str, target: str):
             fields = fields[:MAX_FIELDS]
         labels = [label for key in fields for label in
                   ([facet.label for facet in FACETS[key]] if key in FACETS else [FIELDS[key].label])]
-        event(task_id, 'plan_comparison', f'目标论文 {target}。拟对比：' + '、'.join(labels) + '。')
-        target_paper = local_paper(target)
-        event(task_id, 'check_library', '复用已入库论文。' if target_paper else '目标论文尚未入库，将查找 arXiv。')
-        if target_paper is None:
-            with httpx.Client(timeout=httpx.Timeout(20, connect=8), trust_env=False) as client:
-                identifier = arxiv.paper_id(target)
-                title = None
-                if identifier is None:
-                    event(task_id, 'search_arxiv', f'按标题检索：{target}')
-                    identifier, title = arxiv.resolve_title(client, target)
-                event(task_id, 'download_pdf', f'下载 arXiv:{identifier} 并开始解析。')
-                target_paper = wait_for_document(arxiv.download_pdf(client, identifier, title))
-                event(task_id, 'parse_pdf', f'已解析 {target_paper["page_count"]} 页。')
-        if target_paper['archived']:
-            raise ValueError('目标论文是已归档的版本。请在文献库恢复后重试。')
-        if base['id'] == target_paper['id']:
-            raise ValueError('目标已是当前选中的论文，请选择另一篇。')
-        papers = [base, target_paper]
-        with connect() as con:
-            con.execute('UPDATE tasks SET document_ids=? WHERE id=?',
-                        (json.dumps([paper['id'] for paper in papers]), task_id))
+        scope = f'目标论文 {target}' if len(papers) == 1 else f'使用勾选的 {len(papers)} 篇论文'
+        event(task_id, 'plan_comparison', f'{scope}。拟对比：' + '、'.join(labels) + '。')
+        if len(papers) == 1:
+            papers.append(add_target(task_id, papers[0], target))
         rows, evidence = find_cells(task_id, papers, fields, queries)
         findings = grounded_findings(papers, rows)
         if findings:
-            event(task_id, 'verify_comparison', f'{len(findings)} 条对比结论具备两篇论文的原文出处。')
+            event(task_id, 'verify_comparison', f'{len(findings)} 条对比结论已关联各项原文出处。')
         summaries = 0
         if use_model:
             try:

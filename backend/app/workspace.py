@@ -297,7 +297,8 @@ def comparison_report(task, base_url):
             for excerpt in cell.get('excerpts', []):
                 cited = sources.get(excerpt.get('source_id'))
                 value = citation(cited, excerpt['quote']) if cited else '未检得足够证据。'
-                lines.append(f"  - **{excerpt['label']}** · {value}")
+                measurement = f" {excerpt['display']}" if excerpt.get('display') else ''
+                lines.append(f"  - **{excerpt['label']}{measurement}** · {value}")
                 lines.append('    - 检索词 · ' + ' / '.join(excerpt['searched_queries']))
             if source is None and not cell.get('excerpts'):
                 lines.append('  - 未检得匹配片段。')

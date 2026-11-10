@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 
 
-def verify(client: httpx.Client, fixture: Path, empty: bool) -> None:
+def verify(client: httpx.Client, fixture: Path, empty: bool, gpt_fixtures: Path | None = None) -> None:
     def get(path):
         return client.get(path).raise_for_status()
 
@@ -38,8 +38,8 @@ def verify(client: httpx.Client, fixture: Path, empty: bool) -> None:
     base = uploaded['document']['id']
     assert wait(f'/api/documents/{base}')['status'] in {'ready', 'partial'}
 
-    def compare(question):
-        job = post('/api/tasks/compare', json={'question': question, 'document_ids': [base]})
+    def compare(question, document_ids=None):
+        job = post('/api/tasks/compare', json={'question': question, 'document_ids': document_ids or [base]})
         task = wait(f"/api/tasks/{job['id']}")
         assert task['status'] == 'completed', task.get('result')
         result = task['result']
@@ -113,14 +113,50 @@ def verify(client: httpx.Client, fixture: Path, empty: bool) -> None:
     print(f"PASS homepage, import, grounded findings, multi-source evidence, highlights, report and PDF structure; "
           f"model={health['model_mode']}, architecture={architecture['id']}, hardware={task['id']}, data={data_task['id']}")
 
+    if gpt_fixtures:
+        ids = []
+        for version in (1, 2, 3):
+            path = gpt_fixtures / f'GPT-{version}.pdf'
+            with path.open('rb') as handle:
+                doc = post('/api/documents', files={'file': (path.name, handle, 'application/pdf')})['document']
+            assert wait(f"/api/documents/{doc['id']}")['status'] == 'ready'
+            ids.append(doc['id'])
+        gpt_task, gpt_rows, gpt_sources = compare('比较 GPT-1、GPT-2、GPT-3 的参数量、上下文窗口和 LN 位置。', ids)
+        assert gpt_task['document_ids'] == ids
+        assert not any(event['tool'] == 'download_pdf' for event in gpt_task['events'])
+        expected = {
+            'parameters': (None, ('parameter_count', 1_500_000_000, (1,)), ('parameter_count', 175_000_000_000, (1, 8))),
+            'context': (('training_sequence', 512, (5,)), ('context_window', 1024, (4,)), ('context_window', 2048, (6, 8))),
+            'layer_norm': (None, ('pre_norm_final', None, (4,)), ('pre_norm', None, (8,))),
+        }
+        for key, cases in expected.items():
+            for doc_id, cell, case in zip(ids, gpt_rows[key], cases, strict=True):
+                item, = cell['excerpts']
+                if case is None:
+                    assert item['status'] == 'missing' and len(item['searched_queries']) == 2
+                    continue
+                kind, value, pages = case
+                assert item['kind'] == kind and item.get('value') == value, item
+                page = gpt_sources[item['source_id']]['page']
+                assert page in pages
+                check_cell({'document_id': doc_id, **item}, gpt_sources, page, ())
+        findings = gpt_task['result']['comparison']['findings']
+        assert len(findings) == 3
+        assert {gpt_sources[ref['source_id']]['document_id'] for ref in findings[1]['citations']} == set(ids)
+        assert '1,024 tokens' in findings[1]['text'] and '训练序列长度' in findings[1]['text']
+        gpt_report = get(f"/api/tasks/{gpt_task['id']}/report.md").text
+        assert all(term in gpt_report for term in ('175 B', '512 tokens', '未检得可直接核对'))
+        print(f"PASS GPT three-paper comparison; task={gpt_task['id']}")
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('transformer_pdf', type=Path, help='Path to the original 1706.03762v7 PDF')
     parser.add_argument('--url', default='http://127.0.0.1:8000')
     parser.add_argument('--expect-empty', action='store_true')
+    parser.add_argument('--gpt-fixtures', type=Path, help='Optional directory with GPT-1.pdf, GPT-2.pdf and GPT-3.pdf')
     args = parser.parse_args()
     password = os.getenv('RF_REVIEW_PASSWORD')
     with httpx.Client(base_url=args.url, timeout=30, trust_env=False,
                       auth=('reviewer', password) if password else None) as http:
-        verify(http, args.transformer_pdf, args.expect_empty)
+        verify(http, args.transformer_pdf, args.expect_empty, args.gpt_fixtures)
