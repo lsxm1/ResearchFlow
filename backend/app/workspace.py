@@ -303,6 +303,14 @@ def comparison_report(task, base_url):
             source = sources.get(cell.get('source_id'))
             lines.append(f"- **{column['title']}**")
             for excerpt in cell.get('excerpts', []):
+                if excerpt['status'] == 'conflict':
+                    lines.append(f"  - **{excerpt['label']} · 证据冲突，待核对**")
+                    for alternative in excerpt['alternatives']:
+                        cited = sources[alternative['source_id']]
+                        ref = citation(cited, alternative['quote'])
+                        lines.append(f"    - **{alternative['label']} {alternative['display']}** · {ref}")
+                    lines.append('    - 检索词 · ' + ' / '.join(excerpt['searched_queries']))
+                    continue
                 cited = sources.get(excerpt.get('source_id'))
                 value = citation(cited, excerpt['quote']) if cited else '未检得足够证据。'
                 measurement = f" {excerpt['display']}" if excerpt.get('display') else ''

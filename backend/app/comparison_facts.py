@@ -27,6 +27,7 @@ TIME = rf'{AMOUNT}\s+(?:hours?|days?|minutes?)'
 PARAMETER_SCALES = {'trillion': 10**12, 'billion': 10**9, 'million': 10**6,
                     't': 10**12, 'b': 10**9, 'm': 10**6}
 PARAMETER_UNIT = '|'.join(PARAMETER_SCALES)
+MODEL_SIZE = r'small|base|medium|large|xlarge|xxlarge'
 PARAMETER_COUNT = rf'(?P<amount>{AMOUNT})\s*[-–]?\s*(?P<unit>{PARAMETER_UNIT})'
 SERIES_COUNT = rf'{AMOUNT}\s*(?:{PARAMETER_UNIT})'
 MODEL_RANGE_START = rf'{SERIES_COUNT}(?:\s+parameters)?'
@@ -118,18 +119,24 @@ def normalized_evidence(text):
     return ' '.join(unicodedata.normalize('NFKC', text).split()).casefold()
 
 
+def model_key(name):
+    return re.sub(r'[-‐‑ ]', '', name.casefold())
+
+
 def named_parameter_claims(text, family):
     name = re.escape(family.casefold())
-    model = rf'(?P<model>{name}(?:[- ]?(?:small|base|medium|large|xlarge|xxlarge))?)'
+    model = rf'(?P<model>{name}(?:[- ]?(?:{MODEL_SIZE}))?)'
     patterns = (
         rf'(?<![\w-]){model}\s+(?:contains|has)\s+{PARAMETER_COUNT}\s+parameters?(?=\s*(?:[.;!?)]|and\b|$))',
+        rf'(?<![\w-]){model}\s+configuration with [a-z]\s*=\s*\d+\s+has (?:only )?'
+        rf'{PARAMETER_COUNT}\s+parameters?(?=\s*(?:[.;!?)]|,\s*i\.e\.|and\b|$))',
         rf'\bwe (?:begin by )?train(?:ed|ing)?\s+{model}\s+following (?:the )?[\w-]+ architecture'
         rf'\s*\((?:[^()]{{0,100}},\s*)?{PARAMETER_COUNT}\s+parameters\s*\)',
     )
     normalized = normalized_evidence(text)
     for pattern in patterns:
         for match in re.finditer(pattern, normalized):
-            variant = re.sub(r'[- ]', '', match['model'])
+            variant = model_key(match['model'])
             yield variant, parameter_measurement(match['amount'], match['unit'])
 
 
@@ -171,10 +178,13 @@ def measured_findings(papers, rows):
         key = row['key']
         if key not in ('parameters', 'context', 'layer_norm'):
             continue
-        excerpts, observations, missing = [], [], []
+        excerpts, observations, missing, conflicts = [], [], [], []
         for paper, cell in zip(papers, row['cells'], strict=True):
             title = f"「{paper['title']}」"
             item = cell['excerpts'][0]
+            if item['status'] == 'conflict':
+                conflicts.append(title)
+                continue
             if item['status'] != 'verified_excerpt':
                 missing.append(title)
                 continue
@@ -194,6 +204,8 @@ def measured_findings(papers, rows):
                 text += f'已核对数值的最大值约为最小值的 {max(counts) / min(counts):.1f} 倍。'
         if missing:
             text += '、'.join(missing) + '未检得可直接核对的对应证据。'
+        if conflicts:
+            text += '、'.join(conflicts) + '的证据数值不一致，待核对。'
         findings.append(finding(row['label'] + '对照', text, excerpts))
     return findings
 

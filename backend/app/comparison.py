@@ -97,7 +97,7 @@ def named_parameter_evidence(paper, family, query):
         for variant, measurement in named_parameter_claims(source['text'], family):
             if variant in models and models[variant][1]['value'] != measurement['value']:
                 return None
-            models.setdefault(variant, (source, measurement))
+            models.setdefault(variant, (source, {**measurement, 'variant': variant}))
     return max(models.values(), key=lambda item: item[1]['value'], default=None)
 
 
@@ -149,9 +149,18 @@ def find_facets(task_id, paper, key, model_query, evidence):
             if table:
                 source, facts = table
                 evidence[source['id']] = source
-                item.update(facts, status='verified_excerpt', source_id=source['id'], quote=source['text'])
-                event(task_id, 'read_parameter_table',
-                      f'{paper["filename"]} 第 {source["page"]} 页模型配置表核对到 {source["text"]}。')
+                if facts.pop('conflict'):
+                    item = {'status': 'conflict', 'label': facet.label, 'searched_queries': item['searched_queries'],
+                            'alternatives': [
+                                {'label': '正文', 'display': item['display'], 'source_id': item['source_id'], 'quote': item['quote']},
+                                {'label': '表格', 'display': facts['display'], 'source_id': source['id'], 'quote': source['text']},
+                            ]}
+                    event(task_id, 'parameter_conflict',
+                          f'{paper["filename"]} 的 {source["table"]["model"]} 正文与表格参数量不一致，待核对。')
+                else:
+                    item.update(facts, status='verified_excerpt', source_id=source['id'], quote=source['text'])
+                    event(task_id, 'read_parameter_table',
+                          f'{paper["filename"]} 第 {source["page"]} 页模型配置表核对到 {source["text"]}。')
         excerpts.append(item)
     return excerpts
 
@@ -170,6 +179,10 @@ def find_cells(task_id, papers, fields, queries):
                 excerpts = find_facets(task_id, paper, key, queries.get(key, ''), evidence)
                 cell = {'document_id': paper['id'], 'status': 'missing', 'excerpts': excerpts}
                 verified = [item for item in excerpts if item['status'] == 'verified_excerpt']
+                if any(item['status'] == 'conflict' for item in excerpts):
+                    cell['status'] = 'conflict'
+                    cells.append(cell)
+                    continue
                 if verified:
                     cell['status'] = 'verified_excerpt' if len(verified) == len(excerpts) else 'partial'
                     cells.append(cell)

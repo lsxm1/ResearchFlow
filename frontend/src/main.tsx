@@ -7,8 +7,9 @@ import './style.css';
 type Paper = {id: string; title: string; filename: string; status: string; page_count: number; processed_pages: number; text_pages: number; file_url: string; error?: string; version?: number; archived: boolean};
 type Evidence = {id: string; document_id: string; title: string; filename: string; page: number; text: string; bbox: number[]; score: number; file_url: string; source?: 'native' | 'ocr'; table?: {caption: string; row: number; column: number; heading: string; model?: string}};
 type Citation = {source_id: string; quote: string};
-type ComparisonExcerpt = {label: string; display?: string; source_id?: string; quote?: string; searched_queries: string[]};
-type ComparisonCell = {document_id: string; status: 'missing' | 'candidate' | 'cited_summary' | 'verified_excerpt' | 'partial'; source_id?: string; quote?: string; text?: string; searched_queries?: string[]; excerpts?: ComparisonExcerpt[]};
+type ComparisonExcerpt = {label: string; display?: string; source_id?: string; quote?: string; searched_queries: string[];
+  alternatives?: {label: string; display: string; source_id: string; quote: string}[]};
+type ComparisonCell = {document_id: string; status: 'missing' | 'candidate' | 'cited_summary' | 'verified_excerpt' | 'partial' | 'conflict'; source_id?: string; quote?: string; text?: string; searched_queries?: string[]; excerpts?: ComparisonExcerpt[]};
 type Comparison = {
   papers: {id: string; title: string; filename: string}[];
   rows: {key: string; label: string; cells: ComparisonCell[]}[];
@@ -85,7 +86,16 @@ function ComparisonTable({table, evidence, openEvidence}: {table: Comparison; ev
                 return <div className="facet-excerpt" key={excerpt.label}>
                   <strong>{excerpt.label}{excerpt.display && ` · ${excerpt.display}`}</strong>
                   {cited ? <SourceExcerpt source={cited} quote={excerpt.quote} openEvidence={openEvidence}/>
-                    : <p className="result-note">未检得足够证据</p>}
+                    : excerpt.alternatives ? <>
+                      <p className="warning">证据冲突，待核对</p>
+                      {excerpt.alternatives.map(alternative => {
+                        const source = evidence.find(item => item.id === alternative.source_id);
+                        return source && <div key={alternative.source_id}>
+                          <strong>{alternative.label} · {alternative.display}</strong>
+                          <SourceExcerpt source={source} quote={alternative.quote} openEvidence={openEvidence}/>
+                        </div>;
+                      })}
+                    </> : <p className="result-note">未检得足够证据</p>}
                   {excerpt.searched_queries.length > 1 && <details><summary>查看补查</summary>
                     <ol>{excerpt.searched_queries.map(query => <li key={query}>{query}</li>)}</ol>
                   </details>}

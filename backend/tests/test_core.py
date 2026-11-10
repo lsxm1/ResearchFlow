@@ -200,6 +200,9 @@ class CoreTests(unittest.TestCase):
         value, quote, bbox, location, _ = table_maximum(table, None, 'ModelX')
         self.assertEqual((value, quote, bbox), (335_000_000, '335M', table['cells'][4][1]))
         self.assertEqual((location['model'], location['row'], location['column']), ('ModelX-large', 5, 2))
+        prose = {'value': 333_000_000, 'rounding_step': 1_000_000, 'variant': 'modelxlarge'}
+        self.assertEqual(table_maximum(table, prose, 'ModelX')[0], 335_000_000)
+        self.assertIsNone(table_maximum(table, {**prose, 'variant': 'modelxsmall'}, 'ModelX'))
 
     def test_multi_paper_comparison_keeps_measurements_in_scope(self):
         papers = (

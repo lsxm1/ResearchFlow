@@ -3,6 +3,7 @@ import re
 
 import pymupdf
 
+from .comparison_facts import MODEL_SIZE, PARAMETER_UNIT, normalized_evidence
 from .config import UPLOADS
 from .db import connect
 from .documents import words
@@ -162,6 +163,44 @@ def page_tables(page, blocks, *, with_cells=False):
     return tables
 
 
+def grouped_parameter_table(page, table):
+    """Recover parameter rows when the PDF grid groups several models into a single cell."""
+    if table['method'] != 'grid' or not re.search(r'\b(?:model configurations?|configurations of)\b',
+                                                  normalized_evidence(table['caption'])):
+        return None
+    if any(len(row) != 2 or not all(row) for row in table['cells']):
+        return None
+    left, top, right, bottom = table['bbox']
+    words = page.get_text('words', clip=pymupdf.Rect(left, top - 18, right, bottom))
+    header = sorted((word for word in words if (word[1] + word[3]) / 2 < top), key=lambda word: word[0])
+    if len(header) < 3 or [word[4].casefold() for word in header[:2]] != ['model', 'parameters']:
+        return None
+    if any(abs(word[1] - header[0][1]) > 2 for word in header[1:3]):
+        return None
+    rows, cells = [['Model', 'Parameters']], [[None, list(header[1][:4])]]
+    families = set()
+    for model_box, value_box in table['cells']:
+        group = [word for word in words if model_box[1] <= (word[1] + word[3]) / 2 < model_box[3]]
+        names = [word for word in group if word[2] <= model_box[2]]
+        sizes = [word for word in names if re.fullmatch(MODEL_SIZE, word[4], re.I)]
+        labels = [word for word in names if word not in sizes]
+        counts = [word for word in group if value_box[0] <= word[0] and word[2] < header[2][0]]
+        if len(labels) != 1 or len(sizes) < 2 or len(sizes) != len(counts):
+            return None
+        label, = labels
+        family = label[4]
+        if family.casefold() in families or not re.fullmatch(r'[a-z][a-z0-9-]+', family, re.I):
+            return None
+        families.add(family.casefold())
+        for size, count in zip(sorted(sizes, key=lambda w: w[1]), sorted(counts, key=lambda w: w[1]), strict=True):
+            if size[0] < label[2] or abs(size[1] - count[1]) > 2 or not re.fullmatch(
+                    rf'\d+(?:\.\d+)?(?:{PARAMETER_UNIT})', count[4], re.I):
+                return None
+            rows.append([f'{family}-{size[4]}', count[4]])
+            cells.append([list(size[:4]), list(count[:4])])
+    return {**table, 'rows': rows, 'cells': cells, 'method': 'grouped_config'}
+
+
 def parameter_table_pages(doc_id, pages):
     """Read only candidate pages on the single PyMuPDF worker."""
     result = []
@@ -169,7 +208,9 @@ def parameter_table_pages(doc_id, pages):
         for number in pages:
             page = pdf[number - 1]
             blocks = sorted((block for block in page.get_text('blocks') if block[6] == 0), key=lambda block: block[1])
-            result.append((number, page_tables(page, blocks, with_cells=True)))
+            tables = page_tables(page, blocks, with_cells=True)
+            grouped = [record for table in tables if (record := grouped_parameter_table(page, table))]
+            result.append((number, [*tables, *grouped]))
     return result
 
 

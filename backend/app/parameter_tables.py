@@ -5,7 +5,7 @@ import json
 import logging
 import re
 
-from .comparison_facts import PARAMETER_SCALES, PARAMETER_UNIT, normalized_evidence
+from .comparison_facts import PARAMETER_SCALES, PARAMETER_UNIT, model_key, normalized_evidence
 from .db import connect
 from .documents import PDF_POOL
 from .library_tools import parameter_table_pages
@@ -32,10 +32,13 @@ def owned_model_family(paper):
     if not title:
         return None
     family = title[1]
+    name = re.escape(family.casefold())
     naming = re.compile(
         rf'\b(?:we (?:call|name) our (?:approach|model|method)|which we call|'
         rf'we (?:introduce|present|propose) [^.!?;]{{0,100}}\b(?:model|architecture|method) (?:called|named))'
-        rf'\s+{re.escape(family.casefold())}(?:\d{{1,2}})?(?![\w-])'
+        rf'\s+{name}(?:\d{{1,2}})?(?![\w-])|'
+        rf'\bwe [^.!?;]{{0,100}}\b(?:design(?:ing)?|develop(?:ing)?) [\w -]{{2,48}}'
+        rf'\({name}\)\s+(?:architecture|model|method)\b'
     )
     with connect() as con:
         pages = con.execute("SELECT text FROM pages WHERE document_id=? AND source='native' AND page<=4",
@@ -75,7 +78,8 @@ def table_maximum(table, prose, family=None):
     rows = table['rows']
     if len(rows) < 2:
         return None
-    comparison = re.search(r'\b(?:benchmark|baselines?|comparison|accuracy|performance)\b', caption, re.I)
+    comparison = table.get('method') == 'grouped_config' or re.search(
+        r'\b(?:benchmark|baselines?|comparison|accuracy|performance)\b', caption, re.I)
     if comparison:
         if not family or not re.search(rf'(?<!\w){re.escape(family)}(?!\w)', caption, re.I):
             return None
@@ -102,12 +106,17 @@ def table_maximum(table, prose, family=None):
     if len(matches) != 1:
         return None
     (value, row, column, cell, bbox), orientation, heading = matches[0]
-    if prose and abs(value - prose['value']) * 2 > prose['rounding_step']:
-        return None
     location = {'caption': caption, 'row': row + 1, 'column': column + 1, 'heading': heading}
     if comparison:
         location['model'] = rows[row][model_column].strip()
+    if prose and disagrees(value, prose):
+        if not comparison or prose.get('variant') != model_key(location['model']):
+            return None
     return value, cell, bbox, location, orientation
+
+
+def disagrees(value, prose):
+    return abs(value - prose['value']) * 2 > prose['rounding_step']
 
 
 def find_parameter_cell(paper, prose, family):
@@ -145,4 +154,5 @@ def find_parameter_cell(paper, prose, family):
     label = '配置表报告的最大模型规模' if orientation == 'row' else '模型配置表最大参数量'
     if model:
         label = '本论文模型在对照表中的最大参数量'
-    return evidence, {'kind': 'parameter_count', 'label': label, 'value': value, 'display': quote}
+    return evidence, {'kind': 'parameter_count', 'label': label, 'value': value, 'display': quote,
+                      'conflict': prose is not None and disagrees(value, prose)}
