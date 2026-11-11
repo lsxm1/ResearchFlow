@@ -14,7 +14,7 @@ from .config import model_config
 from .db import connect
 from .documents import words
 from .parameter_tables import find_parameter_cell, owned_model_family
-from .retrieval import retrieve
+from .retrieval import retrieve, reuse_paper_chunks
 
 log = logging.getLogger(__name__)
 
@@ -336,7 +336,8 @@ def execute(task_id: str, target: str):
         event(task_id, 'plan_comparison', f'{scope}。拟对比：' + '、'.join(labels) + '。')
         if len(papers) == 1:
             papers.append(add_target(task_id, papers[0], target))
-        rows, evidence = find_cells(task_id, papers, fields, queries)
+        with reuse_paper_chunks():
+            rows, evidence = find_cells(task_id, papers, fields, queries)
         findings = grounded_findings(papers, rows)
         if findings:
             event(task_id, 'verify_comparison', f'{len(findings)} 条对比结论已关联各项原文出处。')

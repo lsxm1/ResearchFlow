@@ -27,8 +27,9 @@ function ErrorNote({error}: {error: string}) {
   return error ? <p className="banner error" role="alert">{error}</p> : null;
 }
 
-export function Reading({papers, paperId, page, open, evidenceId, returnToComparison}: {
-  papers: Paper[]; paperId: string; page: number; open: OpenPaper; evidenceId?: string; returnToComparison?: () => void;
+export function Reading({papers, paperId, page, open, evidenceId, returnToTask, returnLabel}: {
+  papers: Paper[]; paperId: string; page: number; open: OpenPaper; evidenceId?: string;
+  returnToTask?: () => void; returnLabel: string;
 }) {
   const paper = papers.find(item => item.id === paperId) ?? papers[0];
   const [index, setIndex] = useState<Index>();
@@ -146,7 +147,7 @@ export function Reading({papers, paperId, page, open, evidenceId, returnToCompar
   return <section className="tool-box">
     <h2>联动阅读与翻译</h2>
     <div className="tool-actions">
-      {returnToComparison && <button onClick={returnToComparison}>← 返回对比</button>}
+      {returnToTask && <button onClick={returnToTask}>← {returnLabel}</button>}
       <select aria-label="译文语言" value={language} disabled={busy || !!job} onChange={e => setLanguage(e.target.value as 'Chinese' | 'English')}>
         <option value="Chinese">中文</option><option value="English">学术英文</option>
       </select>

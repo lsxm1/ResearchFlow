@@ -34,11 +34,11 @@ const roadmap = [
   ['06', '写作与图表', '基础版', '带引用提纲、CSV 图表和图注、Mermaid 与 Matplotlib 脚本。'],
 ];
 
-function EvidenceCards({sources, openPaper}: {sources: Evidence[]; openPaper: (id: string, page: number) => void}) {
+function EvidenceCards({sources, openEvidence}: {sources: Evidence[]; openEvidence: (source: Evidence) => void}) {
   return <>{sources.map((source, index) => <article className="evidence" key={source.id}>
     <div className="evidence-head">
       <span className="source-number">{String(index + 1).padStart(2, '0')}</span>
-      <button onClick={() => openPaper(source.document_id, source.page)}>第 {source.page} 页 ↗</button>
+      <button onClick={() => openEvidence(source)}>第 {source.page} 页 ↗</button>
     </div>
     <strong>{source.title}</strong>
     <p>{source.text}</p>
@@ -128,7 +128,7 @@ function App() {
   const [page, setPage] = useState(1);
   const [pageInput, setPageInput] = useState('1');
   const [readingSource, setReadingSource] = useState<string>();
-  const [comparisonPosition, setComparisonPosition] = useState<{top: number; left: number}>();
+  const [taskPosition, setTaskPosition] = useState<{top: number; left: number}>();
   const [question, setQuestion] = useState('What hardware and training schedule were used?');
   const [targetPaper, setTargetPaper] = useState('');
   const [health, setHealth] = useState<Health | null>(null);
@@ -155,12 +155,12 @@ function App() {
 
   useLayoutEffect(() => {
     const output = taskOutput.current;
-    if (view !== 'workspace' || !comparisonPosition || !output) return;
-    output.scrollTop = comparisonPosition.top;
+    if (view !== 'workspace' || !taskPosition || !output) return;
+    output.scrollTop = taskPosition.top;
     const comparison = output.querySelector<HTMLElement>('.comparison-scroll');
-    if (comparison) comparison.scrollLeft = comparisonPosition.left;
-    setComparisonPosition(undefined);
-  }, [view, comparisonPosition]);
+    if (comparison) comparison.scrollLeft = taskPosition.left;
+    setTaskPosition(undefined);
+  }, [view, taskPosition]);
 
   useEffect(() => {
     let active = true;
@@ -217,7 +217,7 @@ function App() {
       setError('该文献已移除，无法打开原文。');
       return;
     }
-    setComparisonPosition({
+    setTaskPosition({
       top: taskOutput.current?.scrollTop ?? 0,
       left: taskOutput.current?.querySelector('.comparison-scroll')?.scrollLeft ?? 0,
     });
@@ -226,7 +226,7 @@ function App() {
   }
 
   function navigate(next: View) {
-    if (next !== view && next !== 'workspace') setComparisonPosition(undefined);
+    if (next !== view && next !== 'workspace') setTaskPosition(undefined);
     setView(next);
   }
 
@@ -324,7 +324,8 @@ function App() {
       {notice && <div className="banner" role="status">{notice}<button onClick={() => setNotice('')} aria-label="关闭提示">×</button></div>}
       {!health && <div className="banner error">后端尚未连接。请运行项目中的 start-backend.ps1。</div>}
       {view === 'reading' ? <Reading papers={readable} paperId={current} page={page} open={openReading} evidenceId={readingSource}
-        returnToComparison={comparisonPosition ? () => navigate('workspace') : undefined}/>
+        returnToTask={taskPosition ? () => navigate('workspace') : undefined}
+        returnLabel={task?.result?.comparison ? '返回对比' : '返回任务'}/>
         : view === 'discovery' ? <Discovery open={openPaper}/>
         : view === 'graph' ? <Graph ids={scopedPapers} open={openReading}/>
         : view === 'writing' ? <Writing ids={scopedPapers}/>
@@ -403,7 +404,7 @@ function App() {
             <div className="output-title"><h3>执行记录</h3><span className={`state ${task.status}`}>{({queued:'排队中',running:'执行中',completed:'已完成',failed:'失败'} as Record<string,string>)[task.status]}</span></div>
             <ol className="timeline">{task.events.map((event,i) => <li key={i}><strong>{event.tool}</strong><span>{event.message}</span></li>)}</ol>
             {task.result?.warnings.map((w,i) => <p className="warning" key={i}>{w}</p>)}
-            {!!task.result?.claims.length && <><h3>有来源的结论</h3>{task.result.claims.map((claim,i) => {const source = task.result?.evidence.find(x => x.id === claim.source_id); return <article className="claim" key={i}><p>{claim.text}</p><blockquote>{claim.quote}</blockquote>{source && <button onClick={() => openPaper(source.document_id,source.page)}>原文 · 第{source.page}页 ↗</button>}</article>;})}</>}
+            {!!task.result?.claims.length && <><h3>有来源的结论</h3>{task.result.claims.map((claim,i) => {const source = task.result?.evidence.find(x => x.id === claim.source_id); return <article className="claim" key={i}><p>{claim.text}</p><blockquote>{claim.quote}</blockquote>{source && <button onClick={() => openEvidence(source)}>原文 · 第{source.page}页 ↗</button>}</article>;})}</>}
             {task.result?.comparison ? <>
               <ComparisonTable table={task.result.comparison} evidence={task.result.evidence} openEvidence={openEvidence}/>
               <p><a href={`/api/tasks/${task.id}/report.md`}>下载研究报告 · Markdown</a></p>
@@ -415,13 +416,13 @@ function App() {
                 const filename = papers.find(p => p.id === id)?.filename ?? sources[0]?.filename ?? '已移除文献';
                 return <section key={id}>
                   <div className="output-title"><h3>{filename}</h3><span>{sources.length} 条</span></div>
-                  {sources.length ? <EvidenceCards sources={sources} openPaper={openPaper}/> : <p className="result-note">这篇文献未返回匹配片段。</p>}
+                  {sources.length ? <EvidenceCards sources={sources} openEvidence={openEvidence}/> : <p className="result-note">这篇文献未返回匹配片段。</p>}
                 </section>;
               })}
             </> : !!task.result?.evidence.length && <>
               <div className="output-title"><h3>原文候选</h3><span>{task.result.evidence.length} 条</span></div>
               <p className="result-note">关键词相关性排序。点击页码核对片段。</p>
-              <EvidenceCards sources={task.result.evidence} openPaper={openPaper}/>
+              <EvidenceCards sources={task.result.evidence} openEvidence={openEvidence}/>
             </>}
           </> : <div className="empty small task-empty"><span>◎</span><h3>让证据先行</h3><p>在左侧勾选已解析文献，再发起任务。<br/>执行步骤与来源将保存在这里。</p></div>}</div>
         </section>
