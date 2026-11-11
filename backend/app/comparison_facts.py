@@ -30,6 +30,10 @@ PARAMETER_UNIT = '|'.join(PARAMETER_SCALES)
 MODEL_SIZE = r'small|base|medium|large|xlarge|xxlarge'
 PARAMETER_COUNT = rf'(?P<amount>{AMOUNT})\s*[-–]?\s*(?P<unit>{PARAMETER_UNIT})'
 SERIES_COUNT = rf'{AMOUNT}\s*(?:{PARAMETER_UNIT})'
+ACTIVE_AFTER_TOTAL = re.compile(
+    rf'\s+(?:total\s+)?parameters?,?\s+(?:and\s+(?:only\s+)?|of which\s+)'
+    rf'{PARAMETER_COUNT}\s+(?:active parameters?|(?:are\s+)?activated|parameters?\s+per\s+token)\b'
+)
 MODEL_RANGE_START = rf'{SERIES_COUNT}(?:\s+parameters)?'
 MODEL_SERIES = rf'(?P<series>{SERIES_COUNT}(?:\s*(?:,\s*(?:and\s+)?|and\s+){SERIES_COUNT})+)'
 MODEL_ANNOUNCEMENT = r'\bwe (?:train(?:ed)?|introduce|present|(?:develop and )?release)\b'
@@ -68,10 +72,13 @@ FACETS = {
     'parameters': (
         Facet('parameter_count', '论文报告的参数量',
               'we train largest model parameters trainable billion million parameter transformer',
-              'model size largest model parameter count billion total parameters',
+              'model size largest model parameter count billion total active activated parameters token',
               (('parameter_count', rf'\bour largest\s*\({PARAMETER_COUNT}[- ]+parameters?\)\s+model\b'),
-               ('parameter_count', rf'\bour (?:largest )?model\b[^.!?]{{0,65}}\b(?:is a|has|with)\s+{PARAMETER_COUNT}[- ]+parameters?\b'),
-               ('parameter_count', rf'\bwe (?:train(?:ed)?|introduce|present)\b[^.!?]{{0,120}}\bwith {PARAMETER_COUNT}\s+parameters\b'),
+               ('parameter_count', rf'\bour (?:largest )?model\b[^.!?]{{0,65}}\b(?:is a|has|with)\s+'
+                rf'{PARAMETER_COUNT}[- ]+(?:total\s+)?parameters?\b'),
+               ('parameter_count', rf'\bwe (?:train(?:ed)?|introduce|present)\b'
+                rf'(?![^.!?]{{0,120}}\b(?:baselines?|reference)\b[^.!?]{{0,120}}\bwith {SERIES_COUNT}\s+(?:total\s+)?parameters\b)'
+                rf'[^.!?]{{0,120}}\bwith {PARAMETER_COUNT}\s+(?:total\s+)?parameters\b'),
                ('parameter_count', rf'\bwe (?:have )?(?:build|built)\s+a larger version of\b'
                 rf'[^.!?]{{0,70}}\bwith {PARAMETER_COUNT}\s+parameters\b'),
                ('parameter_count', rf'{MODEL_ANNOUNCEMENT}[^.!?]{{0,230}}'
@@ -84,7 +91,10 @@ FACETS = {
                 rf'\({MODEL_SERIES}\s+parameters\)'),
                ('parameter_count', rf'\bwe (?:design(?:ed)?|build|built)\s+'
                 rf'(?![^,.!?]{{0,65}}\b(?:baselines?|reference|comparison)\b)'
-                rf'[^,.!?]{{0,65}}\bmodels,\s+(?:one )?with {MODEL_SERIES}\s+parameters\b'))),
+                rf'[^,.!?]{{0,65}}\bmodels,\s+(?:one )?with {MODEL_SERIES}\s+parameters\b'),
+               ('active_parameter_count', rf'\b(?:our (?:largest )?model (?:has|uses)|'
+                rf'we (?:train(?:ed)?|introduce|present)\b[^.!?]{{0,120}}\bwith)\s+'
+                rf'{PARAMETER_COUNT}\s+active parameters\b'))),
     ),
     'context': (
         Facet('context_size', '上下文窗口或训练序列',
@@ -140,31 +150,46 @@ def named_parameter_claims(text, family):
             yield variant, parameter_measurement(match['amount'], match['unit'])
 
 
-def identify(text, facet):
+def identify_measurements(text, facet):
     normalized = normalized_evidence(text)
     for kind, pattern in facet.patterns:
-        match = re.search(pattern, normalized)
-        if not match:
-            continue
-        facts = {'kind': kind}
-        if kind in FACT_LABELS:
-            facts['label'] = FACT_LABELS[kind]
-        if series := match.groupdict().get('series'):
-            facts.update(max((parameter_measurement(item['amount'], item['unit'])
-                              for item in re.finditer(PARAMETER_COUNT, series)), key=lambda item: item['value']))
-        elif amount := match.groupdict().get('amount'):
-            value = Decimal(amount.replace(',', ''))
-            unit = match.groupdict().get('unit')
-            if unit:
-                facts.update(parameter_measurement(amount, unit))
-            else:
-                facts.update(value=int(value), display=f'{int(value):,} tokens')
-        return facts
-    return None
+        for match in re.finditer(pattern, normalized):
+            groups = match.groupdict()
+            measurement_kind = kind
+            active = None
+            if kind == 'parameter_count':
+                tail = normalized[match.end('series' if groups.get('series') else 'unit'):]
+                if re.match(r'\s+parameters?\s+(?:(?:per|for each)\s+token|(?:are\s+)?activ(?:e|ated))\b', tail):
+                    measurement_kind = 'active_parameter_count'
+                elif re.match(r'\s+parameters?\s*(?:,\s*)?(?:per|for each|excluding)\b', tail):
+                    continue
+                elif not groups.get('series'):
+                    active = ACTIVE_AFTER_TOTAL.match(tail)
+            facts = {'kind': measurement_kind}
+            if measurement_kind in FACT_LABELS:
+                facts['label'] = FACT_LABELS[measurement_kind]
+            if series := groups.get('series'):
+                facts.update(max((parameter_measurement(item['amount'], item['unit'])
+                                  for item in re.finditer(PARAMETER_COUNT, series)), key=lambda item: item['value']))
+            elif amount := groups.get('amount'):
+                if unit := groups.get('unit'):
+                    facts.update(parameter_measurement(amount, unit))
+                else:
+                    value = int(Decimal(amount.replace(',', '')))
+                    facts.update(value=value, display=f'{value:,} tokens')
+            yield facts
+            if active:
+                yield {'kind': 'active_parameter_count', 'label': FACT_LABELS['active_parameter_count'],
+                       **parameter_measurement(active['amount'], active['unit'])}
+
+
+def identify(text, facet):
+    return next(identify_measurements(text, facet), None)
 
 
 FACT_LABELS = {
-    'parameter_count': '报告参数量',
+    'parameter_count': '报告总参数量',
+    'active_parameter_count': '报告激活参数量',
     'context_window': '上下文窗口',
     'training_sequence': '训练序列长度',
     'pre_norm': '采用预归一化',
@@ -179,18 +204,19 @@ def measured_findings(papers, rows):
         if key not in ('parameters', 'context', 'layer_norm'):
             continue
         excerpts, observations, missing, conflicts = [], [], [], []
+        verified_papers = 0
         for paper, cell in zip(papers, row['cells'], strict=True):
             title = f"「{paper['title']}」"
-            item = cell['excerpts'][0]
-            if item['status'] == 'conflict':
+            verified = [item for item in cell['excerpts'] if item['status'] == 'verified_excerpt']
+            verified_papers += bool(verified)
+            if any(item['status'] == 'conflict' for item in cell['excerpts']):
                 conflicts.append(title)
-                continue
-            if item['status'] != 'verified_excerpt':
+            elif not verified:
                 missing.append(title)
-                continue
-            excerpts.append(item)
-            observations.append(f"{title}{item['label']} {item.get('display', '')}".rstrip())
-        if len(excerpts) < 2:
+            for item in verified:
+                excerpts.append(item)
+                observations.append(f"{title}{item['label']} {item.get('display', '')}".rstrip())
+        if verified_papers < 2:
             continue
         text = '，'.join(observations) + '。'
         windows = [item['value'] for item in excerpts if item['kind'] == 'context_window']
@@ -199,9 +225,11 @@ def measured_findings(papers, rows):
         if any(item['kind'] == 'training_sequence' for item in excerpts):
             text += '训练序列长度与模型的上下文窗口分别列示。'
         if key == 'parameters':
-            counts = [item['value'] for item in excerpts]
-            if max(counts) > min(counts) > 0:
+            counts = [item['value'] for item in excerpts if item['kind'] == 'parameter_count']
+            if len(counts) >= 2 and max(counts) > min(counts) > 0:
                 text += f'已核对数值的最大值约为最小值的 {max(counts) / min(counts):.1f} 倍。'
+            if any(item['kind'] == 'active_parameter_count' for item in excerpts):
+                text += '激活参数量单独列示，倍数只使用总参数量。'
         if missing:
             text += '、'.join(missing) + '未检得可直接核对的对应证据。'
         if conflicts:
@@ -244,5 +272,6 @@ def grounded_findings(papers, rows):
 
 
 def finding(label, text, excerpts):
+    citations = dict.fromkeys((item['source_id'], item['quote']) for item in excerpts)
     return {'label': label, 'text': text,
-            'citations': [{'source_id': item['source_id'], 'quote': item['quote']} for item in excerpts]}
+            'citations': [{'source_id': source_id, 'quote': quote} for source_id, quote in citations]}

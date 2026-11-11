@@ -31,7 +31,7 @@ FIELDS = {
     'schedule': Field('训练时长与步数', '训练时长|训练时间|训练步数|步数|多少步|耗时|训练多久|花了多久|训练成本|training cost|training time|training steps|training duration|training schedule|wall clock',
                       'training steps trained hours days total schedule', 'trained for steps wall clock duration epochs',
                       r'\b(?:\d[\d,]*(?:\.\d+)?\s*(?:million\s+)?(?:steps|hours?|days?|epochs?)|(?:a million|one million) steps)\b'),
-    'parameters': Field('参数规模', '参数量|参数规模|参数数量|parameter count|parameters|model size',
+    'parameters': Field('参数规模', '参数量|参数规模|参数数量|总参数|激活参数|parameter count|parameters|model size',
                         'total parameters model size million parameters', 'number parameters base large parameter count',
                         r'\b(?:\d+(?:\.\d+)?\s*(?:[mb]|million|billion)\s+parameters|parameters\s*(?:=|:|of)\s*\d+(?:\.\d+)?\s*(?:[mb]|million|billion))\b'),
     'context': Field('上下文与序列长度', '序列长度|上下文长度|上下文窗口|最大输入|输入长度|sequence length|context window|context length|context size',

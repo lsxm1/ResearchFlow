@@ -252,6 +252,41 @@ class CoreTests(unittest.TestCase):
         self.assertIsNone(identify('We design two baseline models, one with 395B and 1.6T parameters.', facet))
         self.assertIsNone(identify('We design two models, one with 395B and 1.6T FLOPs per sequence.', facet))
 
+    def test_parameter_comparison_uses_largest_totals_and_lists_active_counts_separately(self):
+        papers = (
+            ('We train a small model with 125 million parameters.',
+             'Our largest model has 1.5 billion total parameters and 320 million parameters per token.'),
+            ('Our largest model has 3 billion parameters.',),
+            ('We introduce a sparse model with 48 billion active parameters.',),
+        )
+        ids = []
+        for index, passages in enumerate(papers):
+            with pymupdf.open() as pdf:
+                pdf.set_metadata({'title': f'Parameter comparison {index + 1}'})
+                for passage in passages:
+                    pdf.new_page().insert_text((50, 80), passage)
+                upload = self.client.post('/api/documents', files={'file': (f'parameters-{index}.pdf', pdf.tobytes())})
+            doc_id = upload.raise_for_status().json()['document']['id']
+            self.assertEqual(wait_for(self.client, f'/api/documents/{doc_id}', 'status', {'ready', 'failed'})['status'], 'ready')
+            ids.append(doc_id)
+        job = self.client.post('/api/tasks/compare', json={
+            'question': '比较最大模型的总参数和激活参数。', 'document_ids': ids,
+        }).raise_for_status().json()
+        task = wait_for(self.client, f"/api/tasks/{job['id']}", 'status', {'completed', 'failed'})
+        self.assertEqual(task['status'], 'completed')
+        row, = task['result']['comparison']['rows']
+        self.assertEqual([[(item['kind'], item['value']) for item in cell['excerpts']] for cell in row['cells']], [
+            [('parameter_count', 1_500_000_000), ('active_parameter_count', 320_000_000)],
+            [('parameter_count', 3_000_000_000)],
+            [('active_parameter_count', 48_000_000_000)],
+        ])
+        sources = {source['id']: source for source in task['result']['evidence']}
+        total = row['cells'][0]['excerpts'][0]
+        self.assertEqual(sources[total['source_id']]['page'], 2)
+        finding, = task['result']['comparison']['findings']
+        self.assertIn('的 2.0 倍', finding['text'])
+        self.assertIn('激活参数量', finding['text'])
+
     def test_named_parameter_evidence_resolves_variants_and_withholds_conflicts(self):
         from app.comparison import named_parameter_evidence
 

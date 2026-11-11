@@ -201,6 +201,42 @@ def grouped_parameter_table(page, table):
     return {**table, 'rows': rows, 'cells': cells, 'method': 'grouped_config'}
 
 
+def merged_parameter_table(page, table):
+    """Recover the parameter column when the PDF grid merges adjacent columns."""
+    if table['method'] != 'grid' or not table['rows'] or len(table['rows'][0]) != 2:
+        return None
+    model, _ = table['rows'][0]
+    if (model or '').strip().casefold() != 'model' or not all(table['cells'][0]):
+        return None
+    heading_box = pymupdf.Rect(table['cells'][0][1])
+    headings = sorted(page.get_text('words', clip=heading_box), key=lambda word: word[0])
+    if len(headings) < 2 or headings[0][4].casefold() != 'parameters' or abs(headings[0][1] - headings[1][1]) > 2:
+        return None
+
+    rows = [['Model', 'Parameters']]
+    cells = [[table['cells'][0][0], list(headings[0][:4])]]
+    column_right = headings[1][0]
+    for row, boxes in zip(table['rows'][1:], table['cells'][1:], strict=True):
+        if not any((cell or '').strip() for cell in row):
+            break
+        if len(boxes) != 2 or not all(boxes):
+            return None
+        model_box, merged_box = map(pymupdf.Rect, boxes)
+        parameter_box = pymupdf.Rect(merged_box.x0, merged_box.y0, column_right, merged_box.y1)
+        models = sorted(page.get_text('words', clip=model_box), key=lambda word: word[1])
+        counts = sorted(page.get_text('words', clip=parameter_box), key=lambda word: word[1])
+        if not models or len(models) != len(counts):
+            return None
+        if any(b[1] - a[1] <= 2 for a, b in zip(models, models[1:])):
+            return None
+        for name, count in zip(models, counts, strict=True):
+            if abs(name[1] - count[1]) > 2 or not re.fullmatch(rf'\d+(?:\.\d+)?(?:{PARAMETER_UNIT})', count[4], re.I):
+                return None
+            rows.append([name[4], count[4]])
+            cells.append([list(name[:4]), list(count[:4])])
+    return {**table, 'rows': rows, 'cells': cells, 'method': 'merged_parameter_columns'}
+
+
 def parameter_table_pages(doc_id, pages):
     """Read only candidate pages on the single PyMuPDF worker."""
     result = []
@@ -210,7 +246,8 @@ def parameter_table_pages(doc_id, pages):
             blocks = sorted((block for block in page.get_text('blocks') if block[6] == 0), key=lambda block: block[1])
             tables = page_tables(page, blocks, with_cells=True)
             grouped = [record for table in tables if (record := grouped_parameter_table(page, table))]
-            result.append((number, [*tables, *grouped]))
+            merged = [record for table in tables if (record := merged_parameter_table(page, table))]
+            result.append((number, [*tables, *grouped, *merged]))
     return result
 
 

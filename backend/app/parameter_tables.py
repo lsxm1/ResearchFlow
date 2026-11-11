@@ -28,17 +28,19 @@ def candidate_pages(doc_id):
 
 
 def owned_model_family(paper):
-    title = re.match(r'([a-z][a-z0-9-]{2,29})\s*:', paper['title'], re.I)
+    title = re.match(r'([a-z][a-z0-9-]{2,29})(\s+transformers?)?\s*:', paper['title'], re.I)
     if not title:
         return None
     family = title[1]
     name = re.escape(family.casefold())
+    full_name = rf'{name}\s+transformers?' if title[2] else name
     naming = re.compile(
         rf'\b(?:we (?:call|name) our (?:approach|model|method)|which we call|'
         rf'we (?:introduce|present|propose) [^.!?;]{{0,100}}\b(?:model|architecture|method) (?:called|named))'
         rf'\s+{name}(?:\d{{1,2}})?(?![\w-])|'
         rf'\bwe [^.!?;]{{0,100}}\b(?:design(?:ing)?|develop(?:ing)?) [\w -]{{2,48}}'
-        rf'\({name}\)\s+(?:architecture|model|method)\b'
+        rf'\({name}\)\s+(?:architecture|model|method)\b|'
+        rf'\bwe (?:introduce|[^.!?;]{{0,100}}\bwith the introduction of)\s+(?:the\s+)?{full_name}(?![\w-])'
     )
     with connect() as con:
         pages = con.execute("SELECT text FROM pages WHERE document_id=? AND source='native' AND page<=4",
@@ -78,7 +80,7 @@ def table_maximum(table, prose, family=None):
     rows = table['rows']
     if len(rows) < 2:
         return None
-    comparison = table.get('method') == 'grouped_config' or re.search(
+    comparison = table.get('method') in {'grouped_config', 'merged_parameter_columns'} or re.search(
         r'\b(?:benchmark|baselines?|comparison|accuracy|performance)\b', caption, re.I)
     if comparison:
         if not family or not re.search(rf'(?<!\w){re.escape(family)}(?!\w)', caption, re.I):

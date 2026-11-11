@@ -9,7 +9,7 @@ import httpx
 
 from . import agent, arxiv
 from .compare_plan import DEFAULT_FIELDS, FIELDS, MAX_FIELDS, plan_with_model, requested_fields, target_from_question
-from .comparison_facts import FACETS, grounded_findings, identify, named_parameter_claims
+from .comparison_facts import FACETS, grounded_findings, identify, identify_measurements, named_parameter_claims
 from .config import model_config
 from .db import connect
 from .documents import words
@@ -107,18 +107,27 @@ def find_facets(task_id, paper, key, model_query, evidence):
         query = f'{facet.query} {model_query}'.strip()
         item = {'label': facet.label, 'status': 'missing', 'searched_queries': [query]}
         sequence = None
+        parameters = {}
         attempts = [(query, None), (facet.retry, None)]
         if key == 'parameters':
             attempts.append(('we introduce present report family series parameters', 4))
         for index, (attempt, max_page) in enumerate(attempts):
             if index:
-                if max_page:
+                if key == 'parameters' and parameters:
+                    detail = '继续核对更大的模型及参数口径。'
+                elif max_page:
                     detail = '优先补查前四页的模型介绍。'
                 else:
                     detail = '已找到训练序列，继续查找模型窗口。' if sequence else '缺少可核对证据，补查。'
                 event(task_id, 'retry_evidence', f'{paper["filename"]} 的「{facet.label}」{detail}')
                 item['searched_queries'].append(attempt)
             for source in retrieve(attempt, [paper['id']], limit=24 if max_page else 12, max_page=max_page):
+                if key == 'parameters':
+                    for facts in identify_measurements(source['text'], facet):
+                        best = parameters.get(facts['kind'])
+                        if best is None or facts['value'] > best[1]['value']:
+                            parameters[facts['kind']] = (source, facts)
+                    continue
                 facts = identify(source['text'], facet)
                 if not facts:
                     continue
@@ -136,15 +145,19 @@ def find_facets(task_id, paper, key, model_query, evidence):
             item.update(facts, status='verified_excerpt', source_id=source['id'], quote=source['text'].strip())
         if key == 'parameters':
             family = owned_model_family(paper)
-            if family and item['status'] == 'missing':
+            total = parameters.get('parameter_count')
+            if family:
                 query = f'{family} {family}base {family}large model parameters architecture contains training'
                 item['searched_queries'].append(query)
                 event(task_id, 'retry_evidence', f'{paper["filename"]} 按论文自命名的模型系列 {family} 补查正文。')
                 if named := named_parameter_evidence(paper, family, query):
                     source, facts = named
-                    evidence[source['id']] = source
-                    item.update(facts, kind='parameter_count', label='正文核对到的最大模型参数量',
-                                status='verified_excerpt', source_id=source['id'], quote=source['text'].strip())
+                    if total is None or facts['value'] >= total[1]['value']:
+                        total = (source, {**facts, 'kind': 'parameter_count', 'label': '正文核对到的最大总参数量'})
+            if total:
+                source, facts = total
+                evidence[source['id']] = source
+                item.update(facts, status='verified_excerpt', source_id=source['id'], quote=source['text'].strip())
             table = find_parameter_cell(paper, item if item['status'] == 'verified_excerpt' else None, family)
             if table:
                 source, facts = table
@@ -161,6 +174,13 @@ def find_facets(task_id, paper, key, model_query, evidence):
                     item.update(facts, status='verified_excerpt', source_id=source['id'], quote=source['text'])
                     event(task_id, 'read_parameter_table',
                           f'{paper["filename"]} 第 {source["page"]} 页模型配置表核对到 {source["text"]}。')
+            if active := parameters.get('active_parameter_count'):
+                source, facts = active
+                evidence[source['id']] = source
+                if item['status'] != 'missing':
+                    excerpts.append(item)
+                item = {**facts, 'status': 'verified_excerpt', 'source_id': source['id'],
+                        'quote': source['text'].strip(), 'searched_queries': item['searched_queries']}
         excerpts.append(item)
     return excerpts
 
