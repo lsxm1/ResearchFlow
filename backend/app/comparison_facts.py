@@ -133,9 +133,34 @@ def model_key(name):
     return re.sub(r'[-‐‑ ]', '', name.casefold())
 
 
-def named_parameter_claims(text, family):
+def requested_parameter_variants(question):
+    question = normalized_evidence(re.sub(r'《[^》]+》', '', question))
+    names = re.findall(
+        rf'(?<![a-z0-9_‐‑-])[a-z][a-z0-9]*(?:[-‐‑][a-z0-9]+)*?[-‐‑]'
+        rf'(?:{MODEL_SIZE}|xxl|xl|[a-z]|\d+(?:\.\d+)?[bmt])(?![a-z0-9_‐‑-])', question)
+    sizes = re.findall(
+        rf'(?<![a-z0-9_‐‑-])(?:{MODEL_SIZE}|xxl|xl)'
+        rf'(?=\s*(?:的\s*)?(?:版|型|模型|参数|versions?\b|variants?\b|models?\b|parameters?\b))',
+        question)
+    return tuple(dict.fromkeys(model_key(name) for name in [*names, *sizes]))
+
+
+def variant_matches(model, family, variants):
+    key = model_key(model)
+    prefix = model_key(family) if family else ''
+    if key in variants:
+        return True
+    if prefix and key.startswith(prefix):
+        return key[len(prefix):] in variants
+    return bool(prefix and re.fullmatch(rf'(?:{MODEL_SIZE}|xxl|xl)', key) and prefix + key in variants)
+
+
+def named_parameter_claims(text, family, variants=()):
     name = re.escape(family.casefold())
-    model = rf'(?P<model>{name}(?:[- ]?(?:{MODEL_SIZE}))?)'
+    suffix = rf'[-‐‑ ]?(?:{MODEL_SIZE})'
+    if variants:
+        suffix += r'|[-‐‑][a-z0-9.]+'
+    model = rf'(?P<model>{name}(?:{suffix})?)'
     patterns = (
         rf'(?<![\w-]){model}\s+(?:contains|has)\s+{PARAMETER_COUNT}\s+parameters?(?=\s*(?:[.;!?)]|and\b|$))',
         rf'(?<![\w-]){model}\s+configuration with [a-z]\s*=\s*\d+\s+has (?:only )?'

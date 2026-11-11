@@ -1,11 +1,11 @@
-"""Locate a paper's maximum parameter count in an explicitly labeled table."""
+"""Locate a paper's maximum or requested parameter count in a labeled table."""
 from decimal import Decimal
 import hashlib
 import json
 import logging
 import re
 
-from .comparison_facts import PARAMETER_SCALES, PARAMETER_UNIT, model_key, normalized_evidence
+from .comparison_facts import PARAMETER_SCALES, PARAMETER_UNIT, model_key, normalized_evidence, variant_matches
 from .db import connect
 from .documents import PDF_POOL
 from .library_tools import parameter_table_pages
@@ -57,7 +57,7 @@ def model_rows(rows, family):
     return column, [i for i, row in enumerate(rows[1:], 1) if variant.fullmatch((row[column] or '').strip())]
 
 
-def axis_maximum(table, coordinates, header):
+def axis_maximum(table, coordinates, header, *, consistent=False):
     values = []
     for row, column in coordinates:
         cell = (table['rows'][row][column] or '').strip()
@@ -72,10 +72,12 @@ def axis_maximum(table, coordinates, header):
         if not unit and value < 10_000:
             return None  # Small bare values may use an unstated scale.
         values.append((int(value), row, column, cell, bbox))
+    if consistent and len({item[0] for item in values}) > 1:
+        return None
     return max(values, key=lambda item: item[0], default=None)
 
 
-def table_maximum(table, prose, family=None):
+def table_maximum(table, prose, family=None, variants=()):
     caption = ' '.join(table['caption'].split())
     rows = table['rows']
     if len(rows) < 2:
@@ -94,8 +96,18 @@ def table_maximum(table, prose, family=None):
         if prose is None and not re.search(r'\bour\b.{0,40}\bmodels?\b|\bmodels? (?:used|trained) in this work\b', caption, re.I):
             return None
         data_rows = range(1, len(rows))
+        if variants:
+            columns = [i for i, heading in enumerate(rows[0]) if (heading or '').strip().casefold() == 'model']
+            if len(columns) != 1:
+                return None
+            model_column = columns[0]
+    if variants:
+        data_rows = [row for row in data_rows
+                     if variant_matches(rows[row][model_column] or '', family, variants)]
+        if len({model_key(rows[row][model_column]) for row in data_rows}) != 1:
+            return None
     axes = [('column', rows[0], lambda column: ((row, column) for row in data_rows))]
-    if not comparison:
+    if not comparison and not variants:
         axes.append(('row', [row[0] for row in rows], lambda row: ((row, col) for col in range(1, len(rows[row])))))
     matches = []
     for orientation, headings, coordinates in axes:
@@ -103,16 +115,17 @@ def table_maximum(table, prose, family=None):
                    if (match := PARAMETER_HEADER.fullmatch(' '.join((heading or '').split())))]
         if len(headers) == 1:
             index, heading, header = headers[0]
-            if maximum := axis_maximum(table, coordinates(index), header):
+            if maximum := axis_maximum(table, coordinates(index), header, consistent=bool(variants)):
                 matches.append((maximum, orientation, heading.strip()))
     if len(matches) != 1:
         return None
     (value, row, column, cell, bbox), orientation, heading = matches[0]
     location = {'caption': caption, 'row': row + 1, 'column': column + 1, 'heading': heading}
-    if comparison:
+    if comparison or variants:
         location['model'] = rows[row][model_column].strip()
     if prose and disagrees(value, prose):
-        if not comparison or prose.get('variant') != model_key(location['model']):
+        model = location.get('model', '')
+        if not model or not variant_matches(model, family, (prose.get('variant'),)):
             return None
     return value, cell, bbox, location, orientation
 
@@ -121,7 +134,7 @@ def disagrees(value, prose):
     return abs(value - prose['value']) * 2 > prose['rounding_step']
 
 
-def find_parameter_cell(paper, prose, family):
+def find_parameter_cell(paper, prose, family, variants=()):
     pages = candidate_pages(paper['id'])
     if not pages:
         return None
@@ -133,8 +146,10 @@ def find_parameter_cell(paper, prose, family):
         log.warning('Parameter table parsing failed for %s', paper['id'], exc_info=True)
         return None
     matches = [(page, *match) for page, tables in tables_by_page for table in tables
-               if (match := table_maximum(table, prose, family))]
+               if (match := table_maximum(table, prose, family, variants))]
     if not matches:
+        return None
+    if variants and len({(model_key(item[4]['model']), item[1]) for item in matches}) > 1:
         return None
     configs = [item for item in matches if 'model' not in item[4]]
     if len({item[1] for item in configs}) > 1:
@@ -154,7 +169,9 @@ def find_parameter_cell(paper, prose, family):
                 'page': page, 'text': quote, 'bbox': bbox, 'score': 0, 'source': 'native', 'table': table,
                 'file_url': f'/api/documents/{doc_id}/file#page={page}'}
     label = '配置表报告的最大模型规模' if orientation == 'row' else '模型配置表最大参数量'
-    if model:
+    if variants:
+        label = f'{model} 总参数量'
+    elif model:
         label = '本论文模型在对照表中的最大参数量'
     return evidence, {'kind': 'parameter_count', 'label': label, 'value': value, 'display': quote,
                       'conflict': prose is not None and disagrees(value, prose)}

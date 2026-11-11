@@ -9,7 +9,10 @@ import httpx
 
 from . import agent, arxiv
 from .compare_plan import DEFAULT_FIELDS, FIELDS, MAX_FIELDS, plan_with_model, requested_fields, target_from_question
-from .comparison_facts import FACETS, grounded_findings, identify, identify_measurements, named_parameter_claims
+from .comparison_facts import (
+    FACETS, grounded_findings, identify, identify_measurements, named_parameter_claims,
+    requested_parameter_variants, variant_matches,
+)
 from .config import model_config
 from .db import connect
 from .documents import words
@@ -89,19 +92,57 @@ def match_evidence(query, doc_id, field_key):
     return candidate
 
 
-def named_parameter_evidence(paper, family, query):
+def named_parameter_evidence(paper, family, query, variants=()):
     models = {}
     for source in retrieve(query, [paper['id']], limit=24):
         if source['source'] != 'native':
             continue
-        for variant, measurement in named_parameter_claims(source['text'], family):
+        for variant, measurement in named_parameter_claims(source['text'], family, variants):
+            if variants and not variant_matches(variant, family, variants):
+                continue
             if variant in models and models[variant][1]['value'] != measurement['value']:
                 return None
             models.setdefault(variant, (source, {**measurement, 'variant': variant}))
+    if variants and len(models) > 1:
+        return None
     return max(models.values(), key=lambda item: item[1]['value'], default=None)
 
 
-def find_facets(task_id, paper, key, model_query, evidence):
+def parameter_table_excerpt(task_id, paper, item, family, evidence, variants=()):
+    prose = item if item['status'] == 'verified_excerpt' else None
+    table = find_parameter_cell(paper, prose, family, variants)
+    if not table:
+        return item
+    source, facts = table
+    evidence[source['id']] = source
+    if facts.pop('conflict'):
+        event(task_id, 'parameter_conflict',
+              f'{paper["filename"]} 的 {source["table"]["model"]} 正文与表格参数量不一致，待核对。')
+        return {'status': 'conflict', 'label': item['label'], 'searched_queries': item['searched_queries'],
+                'alternatives': [
+                    {'label': '正文', 'display': item['display'], 'source_id': item['source_id'], 'quote': item['quote']},
+                    {'label': '表格', 'display': facts['display'], 'source_id': source['id'], 'quote': source['text']},
+                ]}
+    event(task_id, 'read_parameter_table',
+          f'{paper["filename"]} 第 {source["page"]} 页模型配置表核对到 {source["text"]}。')
+    return {**item, **facts, 'status': 'verified_excerpt', 'source_id': source['id'], 'quote': source['text']}
+
+
+def selected_parameter_excerpt(task_id, paper, variants, evidence):
+    family = owned_model_family(paper)
+    query = ' '.join((family or '', *variants, 'model total parameters')).strip()
+    item = {'label': '指定型号总参数量', 'status': 'missing', 'searched_queries': [query]}
+    if family and (named := named_parameter_evidence(paper, family, query, variants)):
+        source, facts = named
+        evidence[source['id']] = source
+        item.update(facts, kind='parameter_count', status='verified_excerpt',
+                    source_id=source['id'], quote=source['text'].strip())
+    return parameter_table_excerpt(task_id, paper, item, family, evidence, variants)
+
+
+def find_facets(task_id, paper, key, model_query, evidence, parameter_variants=()):
+    if key == 'parameters' and parameter_variants:
+        return [selected_parameter_excerpt(task_id, paper, parameter_variants, evidence)]
     excerpts = []
     for facet in FACETS[key]:
         query = f'{facet.query} {model_query}'.strip()
@@ -158,22 +199,7 @@ def find_facets(task_id, paper, key, model_query, evidence):
                 source, facts = total
                 evidence[source['id']] = source
                 item.update(facts, status='verified_excerpt', source_id=source['id'], quote=source['text'].strip())
-            table = find_parameter_cell(paper, item if item['status'] == 'verified_excerpt' else None, family)
-            if table:
-                source, facts = table
-                evidence[source['id']] = source
-                if facts.pop('conflict'):
-                    item = {'status': 'conflict', 'label': facet.label, 'searched_queries': item['searched_queries'],
-                            'alternatives': [
-                                {'label': '正文', 'display': item['display'], 'source_id': item['source_id'], 'quote': item['quote']},
-                                {'label': '表格', 'display': facts['display'], 'source_id': source['id'], 'quote': source['text']},
-                            ]}
-                    event(task_id, 'parameter_conflict',
-                          f'{paper["filename"]} 的 {source["table"]["model"]} 正文与表格参数量不一致，待核对。')
-                else:
-                    item.update(facts, status='verified_excerpt', source_id=source['id'], quote=source['text'])
-                    event(task_id, 'read_parameter_table',
-                          f'{paper["filename"]} 第 {source["page"]} 页模型配置表核对到 {source["text"]}。')
+            item = parameter_table_excerpt(task_id, paper, item, family, evidence)
             if active := parameters.get('active_parameter_count'):
                 source, facts = active
                 evidence[source['id']] = source
@@ -185,7 +211,7 @@ def find_facets(task_id, paper, key, model_query, evidence):
     return excerpts
 
 
-def find_cells(task_id, papers, fields, queries):
+def find_cells(task_id, papers, fields, queries, parameter_variants=()):
     rows = []
     evidence = {}
     for key in fields:
@@ -196,7 +222,7 @@ def find_cells(task_id, papers, fields, queries):
             retry = field.query if query != field.query else field.retry
             cell = {'document_id': paper['id'], 'status': 'missing', 'searched_queries': [query]}
             if key in FACETS:
-                excerpts = find_facets(task_id, paper, key, queries.get(key, ''), evidence)
+                excerpts = find_facets(task_id, paper, key, queries.get(key, ''), evidence, parameter_variants)
                 cell = {'document_id': paper['id'], 'status': 'missing', 'excerpts': excerpts}
                 verified = [item for item in excerpts if item['status'] == 'verified_excerpt']
                 if any(item['status'] == 'conflict' for item in excerpts):
@@ -205,6 +231,9 @@ def find_cells(task_id, papers, fields, queries):
                     continue
                 if verified:
                     cell['status'] = 'verified_excerpt' if len(verified) == len(excerpts) else 'partial'
+                    cells.append(cell)
+                    continue
+                if key == 'parameters' and parameter_variants:
                     cells.append(cell)
                     continue
                 # Keep the prior broad excerpt available as a lead, even when it
@@ -336,8 +365,9 @@ def execute(task_id: str, target: str):
         event(task_id, 'plan_comparison', f'{scope}。拟对比：' + '、'.join(labels) + '。')
         if len(papers) == 1:
             papers.append(add_target(task_id, papers[0], target))
+        parameter_variants = requested_parameter_variants(question) if 'parameters' in fields else ()
         with reuse_paper_chunks():
-            rows, evidence = find_cells(task_id, papers, fields, queries)
+            rows, evidence = find_cells(task_id, papers, fields, queries, parameter_variants)
         findings = grounded_findings(papers, rows)
         if findings:
             event(task_id, 'verify_comparison', f'{len(findings)} 条对比结论已关联各项原文出处。')

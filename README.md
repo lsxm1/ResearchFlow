@@ -49,6 +49,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1 -LocalModel
 
 正文有多个已检得的模型规模时，对比结果列出其中最大的总参数量。论文明确报告的激活参数量单独展示。跨论文倍数只使用已核对的总参数量。
 
+问「比较两篇论文 Base 版的参数量」可按共同型号筛选，也可分别指定 `BERT-Base`、`ALBERT-xxlarge` 这样的型号名。每篇论文返回一项能核对型号归属的总参数量。没有匹配证据时保留缺口。
+
 同一具名模型的正文和表格数值超出报告精度允许的差异时，对比会标记证据冲突，分别保留两条原文定位。冲突数值留待核对，跨论文倍数只使用已核对的数值。
 
 原始数据目录：`C:\Users\DELL\Doubao\chats\2026-11-09\new-chat\pdf`。

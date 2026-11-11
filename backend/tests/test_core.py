@@ -287,6 +287,41 @@ class CoreTests(unittest.TestCase):
         self.assertIn('的 2.0 倍', finding['text'])
         self.assertIn('激活参数量', finding['text'])
 
+    def test_parameter_comparison_keeps_requested_variant_or_leaves_a_gap(self):
+        papers = {
+            'Alpha': ['We introduce the Alpha. AlphaBASE contains 110M parameters.',
+                      'AlphaLARGE contains 340M parameters.'],
+            'Beta': ['We introduce the Beta. BetaLARGE contains 400M parameters.'],
+        }
+        ids = []
+        for name, passages in papers.items():
+            with pymupdf.open() as pdf:
+                pdf.set_metadata({'title': f'{name}: Language models'})
+                for passage in passages:
+                    pdf.new_page().insert_text((50, 80), passage)
+                upload = self.client.post('/api/documents', files={'file': (f'{name}.pdf', pdf.tobytes())})
+            doc_id = upload.raise_for_status().json()['document']['id']
+            self.assertEqual(wait_for(self.client, f'/api/documents/{doc_id}', 'status', {'ready', 'failed'})['status'], 'ready')
+            ids.append(doc_id)
+
+        def compare(question):
+            job = self.client.post('/api/tasks/compare', json={
+                'question': question, 'document_ids': ids,
+            }).raise_for_status().json()
+            task = wait_for(self.client, f"/api/tasks/{job['id']}", 'status', {'completed', 'failed'})
+            self.assertEqual(task['status'], 'completed')
+            row, = task['result']['comparison']['rows']
+            return row['cells']
+
+        alpha, beta = compare('比较两篇论文 Base 版的参数量')
+        self.assertEqual(alpha['excerpts'][0]['value'], 110_000_000)
+        self.assertEqual(beta['status'], 'missing')
+        self.assertNotIn('source_id', beta)
+        alpha, beta = compare('比较 Alpha-Base 和 Beta-Large 的参数量')
+        self.assertEqual([cell['excerpts'][0]['value'] for cell in (alpha, beta)], [110_000_000, 400_000_000])
+        alpha, beta = compare('比较最大模型的参数量')
+        self.assertEqual([cell['excerpts'][0]['value'] for cell in (alpha, beta)], [340_000_000, 400_000_000])
+
     def test_named_parameter_evidence_resolves_variants_and_withholds_conflicts(self):
         from app.comparison import named_parameter_evidence
 
