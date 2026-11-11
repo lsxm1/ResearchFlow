@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 import httpx
 from .config import model_config
 from .db import connect
+from .qa_facts import adam_beta_evidence, requested_adam_betas
 from .retrieval import retrieve
 
 TASK_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix='task')
@@ -140,13 +141,21 @@ def execute(task_id: str):
         update(task_id, event={'step': 'retrieve', 'message': f'BM25检索返回{len(evidence)}条原文候选。', 'tool': 'search_evidence'})
         warnings = []
         claims = []
-        if enabled and evidence:
+        mode = 'evidence_only'
+        if len(ids) == 1 and (indices := requested_adam_betas(question)):
+            claims, sources, warnings = adam_beta_evidence(ids[0], indices)
+            evidence = list({item['id']: item for item in sources + evidence}.values())
+            mode = 'source_extracted' if claims else 'evidence_only'
+            update(task_id, event={'step': 'validate', 'message': f'从训练原文核对到 {len(claims)} 项 Adam β 参数。',
+                                   'tool': 'extract_adam_betas'})
+        elif enabled and evidence:
             claims, evidence = answer_with_model(task_id, question, ids, evidence, warnings)
+            mode = 'model_assisted' if claims else 'evidence_only'
         elif not enabled:
             warnings.append('尚未启用大模型：当前只展示原文检索候选，不生成问答结论。')
         if not evidence:
             warnings.append('未找到匹配证据，请换用英文关键词或等待文献解析完成。')
-        result = {'mode': 'model_assisted' if claims else 'evidence_only', 'claims': claims,
+        result = {'mode': mode, 'claims': claims,
                   'evidence': evidence, 'warnings': list(dict.fromkeys(warnings))}
         update(task_id, status='completed', result=result,
                event={'step': 'complete', 'message': '结果已保存，可点击来源查看PDF页面。', 'tool': 'save_result'})

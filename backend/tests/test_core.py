@@ -343,6 +343,22 @@ class CoreTests(unittest.TestCase):
         result = wait_for(self.client, f"/api/tasks/{result.json()['id']}", 'status', {'completed','failed'})
         self.assertTrue(any('P100' in e['text'] for e in result['result']['evidence']))
 
+    def test_adam_question_keeps_cited_values_and_leaves_unknown_values_open(self):
+        doc_id = self.upload_ready()
+        job = self.client.post('/api/tasks', json={
+            'question': '这篇论文的 Adam β₁ 和 β₂ 分别是多少？', 'document_ids': [doc_id],
+        }).raise_for_status().json()
+        task = wait_for(self.client, f"/api/tasks/{job['id']}", 'status', {'completed', 'failed'})
+        self.assertEqual(task['status'], 'completed')
+        result = task['result']
+        claim, = result['claims']
+        self.assertEqual(claim['text'], 'Adam β1 = 0.9')
+        self.assertTrue(any('缺少' in warning and 'β2' in warning for warning in result['warnings']))
+        source = next(item for item in result['evidence'] if item['id'] == claim['source_id'])
+        self.assertIn(claim['quote'], source['text'])
+        reader = self.client.get(f"/api/read/{doc_id}/pages/{source['page']}", params={'evidence_id': source['id']})
+        self.assertIsNotNone(reader.raise_for_status().json()['highlight'])
+
     def test_fabricated_citation_is_removed_from_model_output(self):
         doc_id = self.upload_ready()
         def fake_model(system, payload):
