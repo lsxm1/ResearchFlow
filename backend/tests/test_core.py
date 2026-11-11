@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / 'backend'))
 os.environ['RF_DATA_DIR'] = str(ROOT / '.cache' / 'tests' / uuid4().hex)
 os.environ['RF_MODEL_MODE'] = 'disabled'
 
+import httpx
 import pymupdf
 from fastapi.testclient import TestClient
 from app.comparison import hardware_excerpt, summarize_cells
@@ -360,6 +361,31 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(len(result['result']['claims']), 1)
         self.assertEqual(result['result']['claims'][0]['text'], 'hardware statement')
         self.assertTrue(result['result']['warnings'])
+
+    def test_question_preserves_citable_evidence_on_model_failure(self):
+        doc_id = self.upload_ready()
+        config = {'mode': 'openai_compatible', 'base_url': 'http://unused', 'model': 'stub', 'key': ''}
+        cases = (
+            ([httpx.ConnectTimeout('model is offline')], '模型请求失败'),
+            ([{'search_query': 'P100 GPU'}, {'claims': None}], '模型未能生成可读取的答案'),
+        )
+        for replies, warning in cases:
+            with (
+                self.subTest(warning=warning),
+                patch('app.agent.model_config', return_value=config),
+                patch('app.agent.call_model', side_effect=replies) as model,
+            ):
+                job = self.client.post('/api/tasks', json={'question': 'NVIDIA hardware', 'document_ids': [doc_id]})
+                task = wait_for(self.client, f"/api/tasks/{job.raise_for_status().json()['id']}", 'status', {'completed', 'failed'})
+                self.assertEqual(model.call_count, len(replies))
+                self.assertEqual(task['status'], 'completed')
+                result = task['result']
+                self.assertEqual(result['mode'], 'evidence_only')
+                self.assertEqual(result['claims'], [])
+                self.assertTrue(any(warning in message for message in result['warnings']))
+                source = next(e for e in result['evidence'] if 'P100' in e['text'])
+                reader = self.client.get(f"/api/read/{doc_id}/pages/{source['page']}", params={'evidence_id': source['id']})
+                self.assertIsNotNone(reader.raise_for_status().json()['highlight'])
 
     def test_invalid_upload_and_unknown_document_are_rejected(self):
         result = self.client.post('/api/documents', files={'file':('fake.pdf',b'not a PDF','application/pdf')})
