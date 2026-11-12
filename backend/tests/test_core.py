@@ -403,6 +403,38 @@ class CoreTests(unittest.TestCase):
                 reader = self.client.get(f"/api/read/{doc_id}/pages/{source['page']}", params={'evidence_id': source['id']})
                 self.assertIsNotNone(reader.raise_for_status().json()['highlight'])
 
+    def test_model_hardware_counts_must_match_quoted_device_units(self):
+        gpu_quote = 'Hardware: eight NVIDIA P100 GPUs.'
+        tpu_quote = 'BERT uses 4 Cloud TPUs (16 TPU chips total).'
+        pdf = pdf_bytes(f'{gpu_quote} {tpu_quote}')
+        upload = self.client.post('/api/documents', files={'file': ('devices.pdf', pdf)}).raise_for_status().json()
+        doc_id = upload['document']['id']
+        doc = wait_for(self.client, f'/api/documents/{doc_id}', 'status', {'ready', 'failed'})
+        self.assertEqual(doc['status'], 'ready')
+
+        def fake_model(system, payload):
+            if system.startswith('You are'):
+                return {'search_query': ''}
+            source = next(item for item in payload['evidence'] if gpu_quote in item['text'] and tpu_quote in item['text'])
+            return {'claims': [
+                {'text': '训练使用了 8 块 NVIDIA P100 GPU。', 'source_id': source['id'], 'quote': gpu_quote},
+                {'text': '训练使用了 12 块 NVIDIA P100 GPU。', 'source_id': source['id'], 'quote': gpu_quote},
+                {'text': 'BERT 使用 16 个 TPU 芯片。', 'source_id': source['id'], 'quote': tpu_quote},
+                {'text': 'BERT 使用 16 个 Cloud TPU。', 'source_id': source['id'], 'quote': tpu_quote},
+            ]}
+
+        config = {'mode': 'openai_compatible', 'base_url': 'http://unused', 'model': 'stub', 'key': ''}
+        with (
+            patch('app.agent.model_config', return_value=config),
+            patch('app.agent.call_model', side_effect=fake_model),
+        ):
+            job = self.client.post('/api/tasks', json={'question': 'What GPU and TPU hardware was used?', 'document_ids': [doc_id]})
+            task = wait_for(self.client, f"/api/tasks/{job.raise_for_status().json()['id']}", 'status', {'completed', 'failed'})
+        self.assertEqual(task['status'], 'completed')
+        self.assertEqual([claim['text'] for claim in task['result']['claims']],
+                         ['训练使用了 8 块 NVIDIA P100 GPU。', 'BERT 使用 16 个 TPU 芯片。'])
+        self.assertTrue(any('GPU 或 TPU 数量' in message for message in task['result']['warnings']))
+
     def test_invalid_upload_and_unknown_document_are_rejected(self):
         result = self.client.post('/api/documents', files={'file':('fake.pdf',b'not a PDF','application/pdf')})
         self.assertEqual(result.status_code, 415)

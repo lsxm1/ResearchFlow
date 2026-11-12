@@ -1,4 +1,4 @@
-"""Extract directly reported values for narrowly scoped paper questions."""
+"""Extract and check directly reported facts in paper Q&A."""
 import re
 import unicodedata
 from decimal import Decimal
@@ -29,6 +29,37 @@ BETA_ASSIGNMENT = re.compile(
     re.I,
 )
 SETTINGS_END = re.compile(r'\b(?:while|whereas|versus|but|adamw?|sgd|rmsprop|adagrad)\b', re.I)
+WORD_VALUES = dict(zip(
+    'zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen '
+    'seventeen eighteen nineteen twenty'.split(),
+    range(21), strict=True,
+))
+NUMBER_WORD = '|'.join((*WORD_VALUES, 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety',
+                        'hundred', 'thousand', 'million', 'billion'))
+HARDWARE_QUANTITY = re.compile(
+    rf'(?<![a-z0-9_.,-])(?P<count>\d{{1,3}}(?:,\d{{3}})+|\d+|'
+    rf'(?:{NUMBER_WORD})(?:[-\s]+(?:{NUMBER_WORD}|and))*)(?![a-z0-9_]|[.,]\d)'
+    r'\s*(?:[×x个块张片颗枚台]\s*)?'
+    r'(?:(?:nvidia|amd|google|cloud|tesla|geforce|rtx|gtx|[a-z]{1,5}\d{2,4}[a-z]*|\d{3,4})\s+){0,4}'
+    r'(?P<device>gpus?|tpus?)(?![a-z0-9_])'
+    r'(?:\s+v\d+[a-z]?(?:-\d+)?)?'
+    r'(?:\s*(?P<subunit>chips?|cores?|芯片|核心)(?![a-z0-9_]))?',
+    re.I,
+)
+
+
+def hardware_quantities(text):
+    normalized = unicodedata.normalize('NFKC', text).casefold()
+    quantities = set()
+    for match in HARDWARE_QUANTITY.finditer(normalized):
+        count = match['count'].replace(',', '')
+        value = int(count) if count.isdecimal() else WORD_VALUES.get(count)
+        if value is None:
+            continue
+        unit = match['subunit'] or ''
+        unit = {'芯片': 'chip', '核心': 'core'}.get(unit, unit.rstrip('s'))
+        quantities.add((value, match['device'].rstrip('s'), unit))
+    return quantities
 
 
 def requested_adam_betas(question):
