@@ -21,6 +21,7 @@ from app.documents import arxiv_page_title
 from app.library_tools import reference_title_span
 from app.main import app
 from app.training_experiments import training_measurements
+from app.training_tables import grid_counts, ruled_counts
 
 
 def pdf_bytes(text, image=False):
@@ -502,6 +503,31 @@ class CoreTests(unittest.TestCase):
                          {(16, 'tpu', ''), (64, 'tpu', 'chip')})
         self.assertEqual(list(training_measurements(bert, 'BERT', 'large', 'duration')), [(5760, '4 days')])
         self.assertEqual(list(training_measurements(bert, 'BERT', 'large', 'steps')), [])
+
+
+    def test_training_table_uses_owned_row_and_device_count_heading(self):
+        table = {
+            'rows': [['Model Size', 'GPU Count', 'GPT-3 GPUs', 'Total GPU hours'],
+                     ['410 M', '32', '8', '2,540'], ['1.0 B', '64', '16', '4,830']],
+            'cells': [[[0, 0, 1, 1]] * 4, [[0, 1, 1, 2], [1, 1, 2, 2], [2, 1, 3, 2], [3, 1, 4, 2]],
+                      [[0, 2, 1, 3]] * 4],
+        }
+        caption = 'models in the pythia suite and number of gpus used during training'
+        self.assertEqual(list(grid_counts(table, caption, 'Pythia', '410m')),
+                         [('gpu', '32', [1, 1, 2, 2], 2, 2, 'GPU Count')])
+        self.assertEqual(list(grid_counts(table, caption, 'Other', '410m')), [])
+        table['rows'][0][1] = 'GPU hours'
+        self.assertEqual(list(grid_counts(table, caption, 'Pythia', '410m')), [])
+
+        with pymupdf.open() as pdf:
+            page = pdf.new_page()
+            for x, y, text in ((50, 70, 'Model Size'), (112, 70, 'GPU Count'), (180, 70, 'GPT-3 GPUs'),
+                               (55, 91, '410 M'), (122, 91, '32'), (192, 91, '8')):
+                page.insert_text((x, y), text)
+            repaired, = ruled_counts(page, {'bbox': [64, 62, 238, 96]}, caption, 'Pythia', '410m')
+            unit, value, bbox, row, column, heading = repaired
+            self.assertEqual((unit, value, row, column, heading), ('gpu', '32', 2, 2, 'GPU Count'))
+            self.assertTrue(112 <= bbox[0] < bbox[2] < 180)
 
 
 if __name__ == '__main__':

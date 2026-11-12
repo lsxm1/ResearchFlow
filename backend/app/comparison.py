@@ -225,9 +225,9 @@ def find_cells(task_id, papers, fields, queries, parameter_variants=(), training
             cell = {'document_id': paper['id'], 'status': 'missing', 'searched_queries': [query]}
             if scoped or key in FACETS:
                 if scoped:
-                    def on_retry(label):
-                        event(task_id, 'retry_evidence', f'{paper["filename"]} 缺少「{label}」的明确证据，换词补查。')
-                    excerpts = experiment_excerpts(paper, training_scopes[paper['id']], key, evidence, on_retry,
+                    def on_lookup(tool, detail):
+                        event(task_id, tool, f'{paper["filename"]} {detail}')
+                    excerpts = experiment_excerpts(paper, training_scopes[paper['id']], key, evidence, on_lookup,
                                                    queries.get(key, ''))
                 else:
                     excerpts = find_facets(task_id, paper, key, queries.get(key, ''), evidence, parameter_variants)

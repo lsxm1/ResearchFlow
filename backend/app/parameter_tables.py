@@ -1,14 +1,12 @@
 """Locate a paper's maximum or requested parameter count in a labeled table."""
 from decimal import Decimal
-import hashlib
-import json
 import logging
 import re
 
 from .comparison_facts import PARAMETER_SCALES, PARAMETER_UNIT, model_key, normalized_evidence, variant_matches
 from .db import connect
 from .documents import PDF_POOL
-from .library_tools import parameter_table_pages
+from .library_tools import parameter_table_pages, table_cell_evidence
 
 log = logging.getLogger(__name__)
 HEADER = r'(?:#\s*|total\s+(?:number of\s+)?|number of\s+)?(?:parameters|params|nparams)'
@@ -158,16 +156,7 @@ def find_parameter_cell(paper, prose, family, variants=()):
     model = table.get('model')
     if model and any(item[4]['model'].casefold() == model.casefold() and item[1] != value for item in matches):
         return None
-    doc_id = paper['id']
-    location = json.dumps([page, bbox, table, quote], ensure_ascii=False, sort_keys=True)
-    digest = hashlib.sha256(location.encode()).hexdigest()[:20]
-    source_id = f'{doc_id}:{page}:table:{digest}'
-    with connect() as con:
-        con.execute('INSERT OR IGNORE INTO table_anchors(id,document_id,page,bbox) VALUES (?,?,?,?)',
-                    (source_id, doc_id, page, json.dumps(bbox)))
-    evidence = {'id': source_id, 'document_id': doc_id, 'title': paper['title'], 'filename': paper['filename'],
-                'page': page, 'text': quote, 'bbox': bbox, 'score': 0, 'source': 'native', 'table': table,
-                'file_url': f'/api/documents/{doc_id}/file#page={page}'}
+    evidence = table_cell_evidence(paper, page, quote, bbox, table)
     label = '配置表报告的最大模型规模' if orientation == 'row' else '模型配置表最大参数量'
     if variants:
         label = f'{model} 总参数量'

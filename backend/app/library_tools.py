@@ -1,4 +1,6 @@
 """Shared reading, bibliography, and citation graph tools."""
+import hashlib
+import json
 import re
 
 import pymupdf
@@ -89,6 +91,19 @@ def nearest_caption(table, captions):
                   if block[0] < right and block[2] > left]
     return min((item for item in candidates if 0 <= item[0] <= 26), default=(0, None),
                key=lambda item: item[0])[1]
+
+
+def table_cell_evidence(paper, page, quote, bbox, table):
+    doc_id = paper['id']
+    location = json.dumps([page, bbox, table, quote], ensure_ascii=False, sort_keys=True)
+    digest = hashlib.sha256(location.encode()).hexdigest()[:20]
+    source_id = f'{doc_id}:{page}:table:{digest}'
+    with connect() as con:
+        con.execute('INSERT OR IGNORE INTO table_anchors(id,document_id,page,bbox) VALUES (?,?,?,?)',
+                    (source_id, doc_id, page, json.dumps(bbox)))
+    return {'id': source_id, 'document_id': doc_id, 'title': paper['title'], 'filename': paper['filename'],
+            'page': page, 'text': quote, 'bbox': bbox, 'score': 0, 'source': 'native', 'table': table,
+            'file_url': f'/api/documents/{doc_id}/file#page={page}'}
 
 
 def page_tables(page, blocks, *, with_cells=False):

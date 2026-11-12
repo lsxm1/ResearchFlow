@@ -5,6 +5,7 @@ import re
 from .comparison_facts import AMOUNT, FACETS, TIME, model_key, normalized_evidence
 from .qa_facts import HARDWARE_QUANTITY, hardware_quantities
 from .retrieval import retrieve
+from .training_tables import table_hardware
 
 SIZE = r'xxlarge|xlarge|large|medium|small|base|big|\d+(?:\.\d+)?[bmt]'
 NAMED = re.compile(rf'(?<![\w-])([a-z][a-z0-9-]+?)(?:[ -]|\s+\()({SIZE})(?![a-z0-9-])', re.ASCII)
@@ -68,7 +69,7 @@ def training_measurements(text, family, size, metric):
             yield Decimal(amount.replace(',', '')) * {'day': 1440, 'hour': 60, 'minute': 1}[unit.rstrip('s')], display
 
 
-def experiment_excerpts(paper, scope, field, evidence, on_retry, model_query=''):
+def experiment_excerpts(paper, scope, field, evidence, on_lookup, model_query=''):
     items = []
     for metric in ('hardware',) if field == 'hardware' else ('steps', 'duration'):
         label, primary, retry = METRICS[metric]
@@ -83,7 +84,7 @@ def experiment_excerpts(paper, scope, field, evidence, on_retry, model_query='')
             query = f'{family}{size} {size} {keywords}'
             item['searched_queries'].append(query)
             if index:
-                on_retry(item['label'])
+                on_lookup('retry_evidence', f'缺少「{item["label"]}」的明确证据，换词补查。')
             for source in retrieve(query, [paper['id']], limit=16):
                 if source['source'] != 'native':
                     continue
@@ -91,6 +92,14 @@ def experiment_excerpts(paper, scope, field, evidence, on_retry, model_query='')
                     values.setdefault(value, (source, display))
             if values:
                 break
+        if metric == 'hardware':
+            on_lookup('search_training_table', f'检查 {family}-{size} 对应训练表格的设备数量列。')
+            item['searched_queries'].append(f'{family}-{size} 训练表格 GPU Count / TPU Count')
+            for value, source, display in table_hardware(paper, family, size):
+                current = values.get(value)
+                if (current and 'table' in current[0]) or any(value < known for known in values):
+                    continue
+                values[value] = (source, display)
         alternatives = []
         for source, display in values.values():
             evidence[source['id']] = source
