@@ -40,9 +40,8 @@ HARDWARE_QUANTITY = re.compile(
     rf'(?<![a-z0-9_.,-])(?P<count>\d{{1,3}}(?:,\d{{3}})+|\d+|'
     rf'(?:{NUMBER_WORD})(?:[-\s]+(?:{NUMBER_WORD}|and))*)(?![a-z0-9_]|[.,]\d)'
     r'\s*(?:[×x个块张片颗枚台]\s*)?'
-    r'(?:(?:nvidia|amd|google|cloud|tesla|geforce|rtx|gtx|[a-z]{1,5}\d{2,4}[a-z]*|\d{3,4})\s+){0,4}'
-    r'(?P<device>gpus?|tpus?)(?![a-z0-9_])'
-    r'(?:\s+v\d+[a-z]?(?:-\d+)?)?'
+    r'(?:(?:nvidia|amd|google|cloud|tesla|geforce|rtx|gtx|[a-z]{1,5}\d{2,4}[a-z]*|\d{3,4}|\d+\s*(?:gb|gib))\s+){0,4}'
+    r'(?P<device>gpus?|tpus?)(?:\s*v\d+[a-z]?(?:-\d+)?)?(?![a-z0-9_])'
     r'(?:\s*(?P<subunit>chips?|cores?|芯片|核心)(?![a-z0-9_]))?',
     re.I,
 )

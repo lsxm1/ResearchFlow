@@ -392,6 +392,10 @@ function App() {
               setTargetPaper('');
               setQuestion('BERT 继承了 Transformer Encoder 的什么，又改了什么？');
             }} disabled={eligibleCount > 1}>填入 BERT 架构示例</button>
+              {eligibleCount >= 1 && eligibleCount <= 2 && <button onClick={() => {
+                setTargetPaper('');
+                setQuestion('Transformer Big 和 BERT Large 各用了什么设备，训练了多久？能据此判断哪个模型训练效率更高吗？');
+              }}>填入训练实验示例</button>}
               {eligibleCount === 3 && <button onClick={() => setQuestion('比较 GPT-1、GPT-2、GPT-3 的参数量、上下文窗口和 LN 位置。')}>填入 GPT 三代示例</button>}
             </div>
             <button className="primary" onClick={() => void submit(true)}

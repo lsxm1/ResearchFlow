@@ -10,7 +10,7 @@ import httpx
 from . import agent, arxiv
 from .compare_plan import DEFAULT_FIELDS, FIELDS, MAX_FIELDS, plan_with_model, requested_fields, target_from_question
 from .comparison_facts import (
-    FACETS, grounded_findings, identify, identify_measurements, named_parameter_claims,
+    FACETS, finding, grounded_findings, identify, identify_measurements, named_parameter_claims,
     requested_parameter_variants, variant_matches,
 )
 from .config import model_config
@@ -18,6 +18,7 @@ from .db import connect
 from .documents import words
 from .parameter_tables import find_parameter_cell, owned_model_family
 from .retrieval import retrieve, reuse_paper_chunks
+from .training_experiments import experiment_excerpts, requested_training_variants, training_scope
 
 log = logging.getLogger(__name__)
 
@@ -211,18 +212,25 @@ def find_facets(task_id, paper, key, model_query, evidence, parameter_variants=(
     return excerpts
 
 
-def find_cells(task_id, papers, fields, queries, parameter_variants=()):
+def find_cells(task_id, papers, fields, queries, parameter_variants=(), training_scopes=None):
     rows = []
     evidence = {}
     for key in fields:
         field = FIELDS[key]
         cells = []
         for paper in papers:
+            scoped = training_scopes is not None and key in ('hardware', 'schedule')
             query = queries.get(key, field.query)
             retry = field.query if query != field.query else field.retry
             cell = {'document_id': paper['id'], 'status': 'missing', 'searched_queries': [query]}
-            if key in FACETS:
-                excerpts = find_facets(task_id, paper, key, queries.get(key, ''), evidence, parameter_variants)
+            if scoped or key in FACETS:
+                if scoped:
+                    def on_retry(label):
+                        event(task_id, 'retry_evidence', f'{paper["filename"]} 缺少「{label}」的明确证据，换词补查。')
+                    excerpts = experiment_excerpts(paper, training_scopes[paper['id']], key, evidence, on_retry,
+                                                   queries.get(key, ''))
+                else:
+                    excerpts = find_facets(task_id, paper, key, queries.get(key, ''), evidence, parameter_variants)
                 cell = {'document_id': paper['id'], 'status': 'missing', 'excerpts': excerpts}
                 verified = [item for item in excerpts if item['status'] == 'verified_excerpt']
                 if any(item['status'] == 'conflict' for item in excerpts):
@@ -233,7 +241,7 @@ def find_cells(task_id, papers, fields, queries, parameter_variants=()):
                     cell['status'] = 'verified_excerpt' if len(verified) == len(excerpts) else 'partial'
                     cells.append(cell)
                     continue
-                if key == 'parameters' and parameter_variants:
+                if scoped or (key == 'parameters' and parameter_variants):
                     cells.append(cell)
                     continue
                 # Keep the prior broad excerpt available as a lead, even when it
@@ -366,9 +374,19 @@ def execute(task_id: str, target: str):
         if len(papers) == 1:
             papers.append(add_target(task_id, papers[0], target))
         parameter_variants = requested_parameter_variants(question) if 'parameters' in fields else ()
+        training_variants = requested_training_variants(question) if {'hardware', 'schedule'} & set(fields) else ()
+        training_scopes = {paper['id']: training_scope(paper, training_variants) for paper in papers} if training_variants else None
         with reuse_paper_chunks():
-            rows, evidence = find_cells(task_id, papers, fields, queries, parameter_variants)
+            rows, evidence = find_cells(task_id, papers, fields, queries, parameter_variants, training_scopes)
         findings = grounded_findings(papers, rows)
+        if training_variants and re.search(r'训练效率|training efficiency', question, re.I):
+            supporting = [item for row in rows if row['key'] in ('hardware', 'schedule')
+                          for cell in row['cells'] for item in cell.get('excerpts', [])
+                          if item['status'] == 'verified_excerpt']
+            findings.append(finding('训练效率的可比性',
+                                    '已核对的训练设备、步数和耗时见表。比较训练效率还需要统一任务、设备和工作量口径，仅凭报告耗时无法判断。'
+                                    if supporting else '当前缺少能对应到指定型号的训练数据，无法判断训练效率。',
+                                    supporting))
         if findings:
             event(task_id, 'verify_comparison', f'{len(findings)} 条对比结论已关联各项原文出处。')
         summaries = 0

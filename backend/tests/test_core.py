@@ -20,6 +20,7 @@ from app.comparison import hardware_excerpt, summarize_cells
 from app.documents import arxiv_page_title
 from app.library_tools import reference_title_span
 from app.main import app
+from app.training_experiments import training_measurements
 
 
 def pdf_bytes(text, image=False):
@@ -485,6 +486,22 @@ class CoreTests(unittest.TestCase):
         original = 'Earlier reference. Reformer: The Eﬃ-\ncient Transformer. Following reference.'
         start, end = reference_title_span(original, 'reformer the efficient transformer')
         self.assertEqual(original[start:end], 'Reformer: The Eﬃ-\ncient Transformer')
+
+    def test_named_training_measurements_keep_variant_and_shared_scope(self):
+        transformer = ('We trained our models on 8 NVIDIA P100 GPUs. '
+                       'The base models were trained for 100,000 steps (12 hours). '
+                       'The big models were trained for 300,000 steps (3.5 days).')
+        self.assertEqual(list(training_measurements(transformer, 'Transformer', 'big', 'duration')),
+                         [(5040, '3.5 days')])
+        self.assertEqual(list(training_measurements(transformer, 'Transformer', 'base', 'steps')),
+                         [(100000, '100,000 steps')])
+        bert = ('Training of BERTBASE was performed on 4 Cloud TPUs (16 TPU chips total).13 '
+                'Training of BERTLARGE was performed on 16 Cloud TPUs (64 TPU chips total). '
+                'Each pre-training took 4 days to complete. We train for 1,000,000 steps.')
+        self.assertEqual(list(training_measurements(bert, 'BERT', 'large', 'hardware'))[0][0],
+                         {(16, 'tpu', ''), (64, 'tpu', 'chip')})
+        self.assertEqual(list(training_measurements(bert, 'BERT', 'large', 'duration')), [(5760, '4 days')])
+        self.assertEqual(list(training_measurements(bert, 'BERT', 'large', 'steps')), [])
 
 
 if __name__ == '__main__':
