@@ -2,7 +2,11 @@
 
 ResearchFlow 是面向传智杯「AI大模型创新应用挑战赛」的全流程科研 Agent 应用。用户提出研究问题，系统补齐论文、检索证据、生成对比，最后导出包含原文定位、引用关系与写作提纲的研究报告。[赛题范围与验收](docs/模块计划.md)
 
-初版应用基线为 `initial-freeze-2026-11-12`（`fe989ab`）。该版本的本机空库走查和 23 项后端回归已通过。[初步封板验收](docs/验收报告.md#2026-11-12-初步封板验收)
+参赛功能基线为 `75fa172`，已通过 26 项后端回归。早期封板版曾在 Windows 上完成带口令的空库走查。[最新验收与验证范围](docs/验收报告.md#训练设备表格核对)
+
+## 技术架构
+
+React、TypeScript 和 Vite 提供 PDF 阅读与对比界面。Python、FastAPI 和 SQLite 负责文献入库、检索、任务记录和证据定位。PyMuPDF 处理原生文本、表格及坐标，Tesseract 数据用于英文 OCR。Agent 按字段调用 BM25 检索、arXiv 查询和证据核对工具，本地 Qwen 可提供检索词与答案。运行方式见下文，公网评审配置见 [部署与提交](docs/部署与提交.md)。
 
 ## 当前能做什么
 
@@ -31,7 +35,7 @@ ResearchFlow 是面向传智杯「AI大模型创新应用挑战赛」的全流�
 要求 Windows x64、Python 3.12、Node.js 和 npm。在项目目录打开 PowerShell：
 
 ```powershell
-Set-Location -LiteralPath 'C:\Users\DELL\Documents\Codex\2026-11-09\wo\outputs\ResearchFlow'
+Set-Location -LiteralPath '<解压后的 ResearchFlow 目录>'
 powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1 -LocalModel
 ```
 
@@ -63,8 +67,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1 -LocalModel
 
 勾选 Transformer 和 BERT，展开「补齐论文并对比」并点「填入训练实验示例」，可按每篇一个型号核对训练设备、步数和耗时。设备数量会补查有明确型号行和数量列的训练表格，结果可高亮到单元格。正文与表格报告不同设备数量时会保留两处出处。询问训练效率时，报告会说明比较需要哪些条件。
 
-原始数据目录：`C:\Users\DELL\Doubao\chats\2026-11-09\new-chat\pdf`。
-这是公开替代数据集；自行生成的扫描件不能代表官方扫描件难度。不从配套 `.md` 文件导入答案。
+交付包中的「演示样本」用于公开替代数据复验。扫描样本的识别结果仅代表该样本。系统从 PDF 提取正文和证据。
 
 ## 使用其他模型
 
@@ -97,7 +100,7 @@ samples/           绘图用CSV样例
 服务运行后，在另一个 PowerShell 进入项目目录，运行真实 PDF 验收。它会向当前服务的文献库导入样例并保存对比任务。用空库验收时，可在启动服务前给当前 PowerShell 设置独立的 RF_DATA_DIR。
 
 ```powershell
-.\.venv\Scripts\python.exe .\backend\review_smoke.py 'C:\Users\DELL\Doubao\chats\2026-11-09\new-chat\pdf\1706.03762v7.pdf'
+.\.venv\Scripts\python.exe .\backend\review_smoke.py '..\演示样本\1706.03762v7.pdf'
 ```
 
 准备好 Transformer v7、BERT v2 和 GPT 三篇的本地 PDF 后，可以在空库复验，无需临时下载 arXiv 论文。以下示例假定样本目录和项目目录同级。
@@ -120,6 +123,6 @@ npm.cmd --prefix frontend run build
 
 ## 参赛与开源说明
 
-开发者：待填写参赛者姓名、学校、组别。AI辅助：Codex参与架构设计、基础实现与验证；其他Agent贡献按实际工作补充。
+参赛组别为研究生组。参赛者姓名和学校以报名信息为准，提交前请补齐。Codex 参与架构设计、功能实现和验证，豆包协助搜集公开替代样本。
 
 开源来源、许可证、当前限制及后续计划见 `THIRD_PARTY.md` 和 `docs/模块计划.md`。项目采用AGPL-3.0-or-later，许可证全文在 `LICENSE`。保留真实Git历史，不补造开发记录。
