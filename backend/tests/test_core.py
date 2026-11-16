@@ -459,7 +459,7 @@ class CoreTests(unittest.TestCase):
             if system.startswith('You are'):
                 plans.append(evidence_ids)
                 if len(plans) == 1:
-                    return {'sufficient': False, 'search_query': 'training setup'}
+                    return {'sufficient': 'false', 'search_query': 'training setup'}
                 return {'sufficient': False, 'search_query': 'NVIDIA P100 GPU'}
             self.assertIn(decisive['id'], evidence_ids)
             return {'claims': [
@@ -490,6 +490,33 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(task['result']['validation'],
                          {'generated': 3, 'checked': 3, 'accepted': 1, 'rejected': 2,
                           'rejected_quote': 1, 'rejected_hardware': 1})
+
+    def test_model_uses_short_passage_ids_and_server_attaches_exact_text(self):
+        doc_id = self.upload_ready()
+        config = {'mode': 'openai_compatible', 'base_url': 'http://unused', 'model': 'stub', 'key': ''}
+
+        def fake_model(system, payload):
+            if system.startswith('You are'):
+                return {'sufficient': 'TRUE', 'search_query': 'do not search again'}
+            source = payload['evidence'][0]
+            return {'claims': [
+                {'passage_id': source['passage_id'], 'text': '训练用了 8 块 NVIDIA P100 GPU。'},
+                {'passage_id': source['passage_id'], 'text': '训练用了 10 块 NVIDIA P100 GPU。'},
+                {'passage_id': 'P999', 'source_id': source['id'], 'text': '无效的出处。'},
+                {'passage_id': source['passage_id'], 'source_id': 'other', 'text': '错配的出处。'},
+            ]}
+
+        with patch('app.agent.model_config', return_value=config), patch('app.agent.call_model', side_effect=fake_model):
+            job = self.client.post('/api/tasks', json={'question': 'NVIDIA P100 GPU', 'document_ids': [doc_id]})
+            task = wait_for(self.client, f"/api/tasks/{job.raise_for_status().json()['id']}", 'status', {'completed', 'failed'})
+        self.assertEqual(task['status'], 'completed')
+        self.assertFalse(any(event['step'].startswith('observe_') for event in task['events']))
+        result = task['result']
+        claim, = result['claims']
+        original = next(item for item in result['evidence'] if item['id'] == claim['source_id'])
+        self.assertEqual(claim['quote'], original['text'])
+        self.assertEqual(result['validation']['rejected_quote'], 2)
+        self.assertEqual(result['validation']['rejected_hardware'], 1)
 
     def test_comparison_rejects_a_quote_from_the_other_paper(self):
         left = {'document_id': 'left', 'status': 'candidate', 'source_id': 'left-block',
