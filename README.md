@@ -1,12 +1,12 @@
 # ResearchFlow · 科研证据工作台
 
-ResearchFlow 是面向传智杯「AI大模型创新应用挑战赛」的全流程科研 Agent 应用。用户提出研究问题，系统补齐论文、检索证据、生成对比，最后导出包含原文定位、引用关系与写作提纲的研究报告。[赛题范围与验收](docs/模块计划.md)
+ResearchFlow 是面向传智杯「AI大模型创新应用挑战赛」的全流程科研 Agent 应用。用户提出研究问题，系统补齐论文、检索证据、生成对比，最后导出包含原文定位、引用关系与写作提纲的研究报告。[验证报告](docs/验收报告.md)
 
 参赛功能基线为 `75fa172`，已通过 26 项后端回归。Railway 公网验收也已通过。[验收结果与覆盖范围](docs/验收报告.md#railway-公网验收)
 
 ## 技术架构
 
-React、TypeScript 和 Vite 提供 PDF 阅读与对比界面。Python、FastAPI 和 SQLite 负责文献入库、检索、任务记录和证据定位。PyMuPDF 处理原生文本、表格及坐标，Tesseract 数据用于英文 OCR。Agent 按字段调用 BM25 检索、arXiv 查询和证据核对工具，本地 Qwen 可提供检索词与答案。运行方式见下文，公网评审配置见 [部署与提交](docs/部署与提交.md)。
+React、TypeScript 和 Vite 提供 PDF 阅读与对比界面。Python、FastAPI 和 SQLite 负责文献入库、检索、任务记录和证据定位。PyMuPDF 处理原生文本、表格及坐标，Tesseract 数据用于英文 OCR。Agent 按字段调用 BM25 检索、arXiv 查询和证据核对工具，本地 Qwen 可提供检索词与答案。运行方式见下文，公网评审配置见 [部署指南](docs/部署指南.md)。
 
 ## 当前能做什么
 
@@ -43,7 +43,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1 -LocalModel
 
 换电脑时，运行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\setup-ocr.ps1` 下载约 4 MB 英文识别数据。本机已准备好。使用自定义数据目录时，可用 `RF_TESSDATA_DIR` 指向包含 `eng.traineddata` 的目录。
 
-本地模式绑定回环地址。`docker compose up --build` 提供同源服务的容器部署配置。参赛演示已在 Railway 用 Dockerfile 构建并通过公网 HTTPS 验收，评审以 `reviewer` 登录。线上采用证据模式。生成式问答和翻译可通过本机模型模式体验。[在线演示及复现方式](docs/部署与提交.md)
+本地模式绑定回环地址。`docker compose up --build` 提供同源服务的容器部署配置。参赛演示已在 Railway 用 Dockerfile 构建并通过公网 HTTPS 验收，评审以 `reviewer` 登录。线上采用证据模式。生成式问答和翻译可通过本机模型模式体验。[在线演示及复现方式](docs/部署指南.md)
 
 ## 第一次体验
 
@@ -91,7 +91,7 @@ backend/app/       配置、SQLite、PDF解析、检索、任务执行、HTTP AP
 backend/tests/     隔离数据的回归测试
 backend/review_smoke.py  用真实PDF走查运行中的工作台
 frontend/src/      React工作台
-docs/              模块计划、接口约定、豆包任务书、验收报告
+docs/              部署指南、接口约定、验证报告
 data/              上传文件和SQLite（自动生成，不提交）
 .cache/local-model/ 本机的推理程序和模型权重（自动下载，不提交）
 samples/           绘图用CSV样例
@@ -125,4 +125,4 @@ npm.cmd --prefix frontend run build
 
 参赛者为西安交通大学李旭，参加研究生组。Codex 参与架构设计、功能实现和验证，豆包协助搜集公开替代样本。
 
-开源来源、许可证、当前限制及后续计划见 `THIRD_PARTY.md` 和 `docs/模块计划.md`。项目采用AGPL-3.0-or-later，许可证全文在 `LICENSE`。保留真实Git历史，不补造开发记录。
+开源来源和许可证见 `THIRD_PARTY.md`。项目采用AGPL-3.0-or-later，许可证全文在 `LICENSE`。保留真实Git历史，不补造开发记录。
