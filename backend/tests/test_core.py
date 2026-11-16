@@ -442,6 +442,55 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result.status_code, 415)
         self.assertEqual(self.client.get('/api/documents/unknown/file').status_code, 404)
 
+    def test_second_followup_reaches_the_answer_and_records_validation(self):
+        doc_id = self.upload_ready()
+        quote = 'Hardware: eight NVIDIA P100 GPUs.'
+
+        def source(source_id, text):
+            return {'id': source_id, 'text': text, 'document_id': doc_id}
+
+        initial = [source(f'initial-{index}', 'Background evidence from the original search.') for index in range(6)]
+        followup = [source(f'followup-{index}', 'The experiment describes a training setup.') for index in range(6)]
+        decisive = source('decisive', quote)
+        plans = []
+
+        def fake_model(system, payload):
+            evidence_ids = {item['id'] for item in payload['evidence']}
+            if system.startswith('You are'):
+                plans.append(evidence_ids)
+                if len(plans) == 1:
+                    return {'sufficient': False, 'search_query': 'training setup'}
+                return {'sufficient': False, 'search_query': 'NVIDIA P100 GPU'}
+            self.assertIn(decisive['id'], evidence_ids)
+            return {'claims': [
+                {'source_id': decisive['id'], 'text': '训练使用 8 块 NVIDIA P100 GPU。', 'quote': quote},
+                {'source_id': decisive['id'], 'text': '训练使用 12 块 NVIDIA P100 GPU。', 'quote': quote},
+                {'source_id': decisive['id'], 'text': '观察到训练硬件。', 'quote': 'A fabricated quote of adequate length.'},
+            ]}
+
+        config = {'mode': 'openai_compatible', 'base_url': 'http://unused', 'model': 'stub', 'key': ''}
+        with (
+            patch('app.agent.model_config', return_value=config),
+            patch('app.agent.collect_evidence', side_effect=[initial, followup, [decisive]]) as search,
+            patch('app.agent.call_model', side_effect=fake_model),
+        ):
+            job = self.client.post('/api/tasks', json={'question': 'What hardware was used?', 'document_ids': [doc_id]})
+            task = wait_for(self.client, f"/api/tasks/{job.raise_for_status().json()['id']}", 'status', {'completed', 'failed'})
+
+        self.assertEqual(task['status'], 'completed')
+        self.assertEqual(search.call_count, 3)
+        self.assertNotIn('followup-0', plans[0])
+        self.assertIn('followup-0', plans[1])
+        self.assertEqual([event['step'] for event in task['events'] if event['step'].startswith('observe_')],
+                         ['observe_1', 'observe_2'])
+        self.assertEqual(task['result']['mode'], 'model_assisted')
+        claim, = task['result']['claims']
+        self.assertEqual(claim['source_id'], decisive['id'])
+        self.assertIn(decisive, task['result']['evidence'])
+        self.assertEqual(task['result']['validation'],
+                         {'generated': 3, 'checked': 3, 'accepted': 1, 'rejected': 2,
+                          'rejected_quote': 1, 'rejected_hardware': 1})
+
     def test_comparison_rejects_a_quote_from_the_other_paper(self):
         left = {'document_id': 'left', 'status': 'candidate', 'source_id': 'left-block',
                 'quote': 'Training took 80,000 steps.'}
