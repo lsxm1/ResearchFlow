@@ -489,7 +489,7 @@ class CoreTests(unittest.TestCase):
         self.assertIn(decisive, task['result']['evidence'])
         self.assertEqual(task['result']['validation'],
                          {'generated': 3, 'checked': 3, 'accepted': 1, 'rejected': 2,
-                          'rejected_quote': 1, 'rejected_hardware': 1})
+                          'passage_selected': 0, 'rejected_quote': 1, 'rejected_hardware': 1, 'rejected_number': 0})
 
     def test_model_uses_short_passage_ids_and_server_attaches_exact_text(self):
         doc_id = self.upload_ready()
@@ -517,6 +517,34 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(claim['quote'], original['text'])
         self.assertEqual(result['validation']['rejected_quote'], 2)
         self.assertEqual(result['validation']['rejected_hardware'], 1)
+
+    def test_training_step_claims_match_explicit_quantities_in_the_selected_passage(self):
+        sentence = 'The big models were trained for 300,000 steps (3.5 days).'
+        upload = self.client.post('/api/documents', files={'file': ('schedule.pdf', pdf_bytes(sentence))})
+        doc_id = upload.raise_for_status().json()['document']['id']
+        doc = wait_for(self.client, f'/api/documents/{doc_id}', 'status', {'ready', 'failed'})
+        self.assertEqual(doc['status'], 'ready')
+
+        def fake_model(system, payload):
+            if system.startswith('You are'):
+                return {'sufficient': True}
+            source = next(item for item in payload['evidence'] if sentence in item['text'])
+            return {'claims': [{'passage_id': source['passage_id'], 'text': text} for text in (
+                'Big 模型训练了30万步。', 'Big 模型训练了 300k steps。',
+                'Big 模型训练了 30,000 步。', 'Big 模型训练了 3.5 steps。',
+            )]}
+
+        config = {'mode': 'openai_compatible', 'base_url': 'http://unused', 'model': 'stub', 'key': ''}
+        with patch('app.agent.model_config', return_value=config), patch('app.agent.call_model', side_effect=fake_model):
+            job = self.client.post('/api/tasks', json={'question': 'How many steps were the big models trained?',
+                                                      'document_ids': [doc_id]}).raise_for_status().json()
+            task = wait_for(self.client, f"/api/tasks/{job['id']}", 'status', {'completed', 'failed'})
+        self.assertEqual(task['status'], 'completed')
+        result = task['result']
+        self.assertEqual([claim['text'] for claim in result['claims']],
+                         ['Big 模型训练了30万步。', 'Big 模型训练了 300k steps。'])
+        self.assertEqual(result['validation']['passage_selected'], 4)
+        self.assertEqual(result['validation']['rejected_number'], 2)
 
     def test_comparison_rejects_a_quote_from_the_other_paper(self):
         left = {'document_id': 'left', 'status': 'candidate', 'source_id': 'left-block',

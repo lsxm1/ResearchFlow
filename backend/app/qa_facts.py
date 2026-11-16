@@ -45,6 +45,21 @@ HARDWARE_QUANTITY = re.compile(
     r'(?:\s*(?P<subunit>chips?|cores?|芯片|核心)(?![a-z0-9_]))?',
     re.I,
 )
+STEP_QUANTITY = re.compile(
+    r'(?<![a-z0-9_.,-])(?P<count>[0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)\s*'
+    r'(?P<scale>thousand|million|[km万])?\s*(?:(?:training|optimization)\s+)?'
+    r'(?:steps?\b|步)',
+    re.I,
+)
+STEP_SCALES = {'k': 1000, 'thousand': 1000, '万': 10000, 'm': 1000000, 'million': 1000000}
+
+
+def training_step_quantities(text):
+    normalized = unicodedata.normalize('NFKC', text).casefold()
+    return {
+        Decimal(match['count'].replace(',', '')) * STEP_SCALES.get(match['scale'], 1)
+        for match in STEP_QUANTITY.finditer(normalized)
+    }
 
 
 def hardware_quantities(text):

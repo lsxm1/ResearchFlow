@@ -14,7 +14,7 @@ from time import monotonic
 import httpx
 from .config import model_config
 from .db import connect
-from .qa_facts import adam_beta_evidence, hardware_quantities, requested_adam_betas
+from .qa_facts import adam_beta_evidence, hardware_quantities, requested_adam_betas, training_step_quantities
 from .retrieval import retrieve
 
 TASK_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix='task')
@@ -144,7 +144,7 @@ def answer_with_model(task_id, question, ids, evidence, warnings):
     source_map = {x['id']: x for x in context}
     claims = []
     candidates = generated['claims'][:8]
-    rejected_quote = rejected_hardware = 0
+    rejected_quote = rejected_hardware = rejected_number = passage_selected = 0
     for candidate in candidates:
         claim = candidate if isinstance(candidate, dict) else {}
         source_id = claim.get('source_id')
@@ -162,9 +162,15 @@ def answer_with_model(task_id, question, ids, evidence, warnings):
             rejected_quote += 1
             warnings.append('一条模型输出未通过原文引用校验，已移除。')
             continue
+        if 'passage_id' in claim:
+            passage_selected += 1
         if hardware_quantities(text) - hardware_quantities(quote):
             rejected_hardware += 1
             warnings.append('一条模型结论的 GPU 或 TPU 数量在引句中缺少对应证据，已移除。')
+            continue
+        if training_step_quantities(text) - training_step_quantities(quote):
+            rejected_number += 1
+            warnings.append('一条模型结论的训练步数在所选引句中缺少对应证据，已移除。')
             continue
         claims.append({'text': text[:1800], 'source_id': source['id'], 'quote': quote})
     limitations = generated.get('limitations', [])
@@ -173,11 +179,14 @@ def answer_with_model(task_id, question, ids, evidence, warnings):
     if claims and {x['document_id'] for x in evidence} - {x['document_id'] for x in context}:
         warnings.append('模型结论只覆盖部分文献的片段，其余文献请查看证据对照。')
     validation = {'generated': len(generated['claims']), 'checked': len(candidates), 'accepted': len(claims),
-                  'rejected': rejected_quote + rejected_hardware, 'rejected_quote': rejected_quote,
-                  'rejected_hardware': rejected_hardware}
+                  'passage_selected': passage_selected, 'rejected': rejected_quote + rejected_hardware + rejected_number,
+                  'rejected_quote': rejected_quote, 'rejected_hardware': rejected_hardware,
+                  'rejected_number': rejected_number}
     update(task_id, event={'step': 'validate',
-                          'message': f'模型输出 {validation["generated"]} 条，核验 {len(candidates)} 条，通过 {len(claims)} 条。'
-                                     f'移除 {validation["rejected"]} 条（原文引用 {rejected_quote}，设备数量 {rejected_hardware}）。',
+                          'message': f'模型输出 {validation["generated"]} 条，核验 {len(candidates)} 条，'
+                                     f'按编号关联原文 {passage_selected} 条，通过 {len(claims)} 条。'
+                                     f'移除 {validation["rejected"]} 条'
+                                     f'（原文引用 {rejected_quote}，设备数量 {rejected_hardware}，训练步数 {rejected_number}）。',
                           'tool': 'verify_quotes'})
     return claims, evidence, validation
 
